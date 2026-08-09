@@ -73,7 +73,7 @@ jobs:
             hw: { label: '休出', time: '' },
           };
           const CAT_LABELS = {
-            event: 'イベント', goods: 'グッズ販売', stream: '配信', members: '限定配信',
+            event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信',
             call: 'FB通話', other: 'その他', personal: '自分の予定',
           };
           const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
