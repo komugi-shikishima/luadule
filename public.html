@@ -92,8 +92,9 @@ h1,h2,h3{ margin:0; }
 
 /* 長期予定の一覧(カレンダー上部) */
 .longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
-.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
+.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
 .longterm-list{ display:flex; flex-direction:column; gap:6px; }
+.today-date-label{ font-size:0.78rem; font-weight:400; color:var(--text-muted); white-space:nowrap; }
 .longterm-item{
   display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
   background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
@@ -425,6 +426,25 @@ function eventsOnDay(events, dateStr) {
   return (events || []).filter((ev) => ev && occursOnDay(ev, dateStr));
 }
 
+// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(index.htmlと同一仕様。v24)。
+// 公開データにシフトは無いため { dateStr, events } のみを返す。
+// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果を
+// 時刻順(timeがある予定を先にtime昇順、無い予定は後ろに回す)→タイトル昇順(localeCompare)でソートする
+function todayAgenda(events, today) {
+  const sorted = eventsOnDay(events, today)
+    .slice()
+    .sort((a, b) => {
+      if (a.time && b.time) {
+        if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+        return String(a.title).localeCompare(String(b.title));
+      }
+      if (a.time && !b.time) return -1;
+      if (!a.time && b.time) return 1;
+      return String(a.title).localeCompare(String(b.title));
+    });
+  return { dateStr: today, events: sorted };
+}
+
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数(index.htmlと同一仕様)。
 // anniversary(記念日)は年を問わず「startDateの月 === 対象月」で判定する
 function isEventInMonth(ev, year, month) {
@@ -528,6 +548,7 @@ function renderApp() {
   if (appState.status === 'error') return renderStateBox(appState.errorMessage, true);
   return `
     ${renderHeader()}
+    ${renderTodaySection()}
     ${renderReminderBanner()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
@@ -574,6 +595,22 @@ function renderReminderBanner() {
     <div class="reminder-banner">
       ${reminders.map((r) => `<div class="reminder-item">${escapeHtml(r.text)}</div>`).join('')}
     </div>
+  `;
+}
+
+// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24)。
+// 公開データにシフトは無いため予定一覧のみを表示する。今日固定(表示中の月に依存しない)。
+// 予定が0件でもカード自体は常に表示する。合言葉の猫の顔文字はこのページには一切出さない
+function renderTodaySection() {
+  const agenda = todayAgenda(appState.payload.events, todayStr());
+  const body = agenda.events.length
+    ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
+    : `<p class="empty-hint">今日の予定はありません</p>`;
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
+      ${body}
+    </section>
   `;
 }
 

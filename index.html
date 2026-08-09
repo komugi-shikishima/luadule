@@ -131,8 +131,10 @@ h1,h2,h3{ margin:0; }
 
 /* 長期予定の一覧(カレンダー上部) */
 .longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
-.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
+.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
 .longterm-list{ display:flex; flex-direction:column; gap:6px; }
+.today-date-label{ font-size:0.78rem; font-weight:400; color:var(--text-muted); white-space:nowrap; }
+.today-shift-row{ font-size:0.88rem; margin-bottom:6px; }
 .longterm-item{
   display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
   background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
@@ -569,6 +571,29 @@ function occursOnDay(ev, dateStr) {
 function eventsOnDay(targetState, dateStr) {
   const events = (targetState && targetState.events) || [];
   return events.filter((ev) => ev && !ev.deleted && occursOnDay(ev, dateStr));
+}
+
+// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(v24)。
+// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果を
+// 時刻順(timeがある予定を先にtime昇順、無い予定は後ろに回す)→タイトル昇順(localeCompare)でソートする。
+// shift は targetState.shifts[today] が存在し削除されていなければそのオブジェクト、無ければ null。
+// null安全: targetState が null/undefined でも { dateStr: today, events: [], shift: null } を返す
+function todayAgenda(targetState, today) {
+  if (!targetState) return { dateStr: today, events: [], shift: null };
+  const events = eventsOnDay(targetState, today)
+    .slice()
+    .sort((a, b) => {
+      if (a.time && b.time) {
+        if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+        return String(a.title).localeCompare(String(b.title));
+      }
+      if (a.time && !b.time) return -1;
+      if (!a.time && b.time) return 1;
+      return String(a.title).localeCompare(String(b.title));
+    });
+  const shiftRaw = (targetState.shifts || {})[today];
+  const shift = (shiftRaw && !shiftRaw.deleted) ? shiftRaw : null;
+  return { dateStr: today, events, shift };
 }
 
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
@@ -1471,6 +1496,7 @@ function fullRender() {
 function renderApp() {
   return `
     ${renderHeader()}
+    ${renderTodaySection()}
     ${renderReminderBanner()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
@@ -1519,6 +1545,28 @@ function renderReminderBanner() {
     <div class="reminder-banner">
       ${reminders.map((r) => `<div class="reminder-item">${escapeHtml(r.text)}</div>`).join('')}
     </div>
+  `;
+}
+
+// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24)。
+// 今日固定(表示中の月=uiState.year/monthに依存しない)。今日のシフトと今日の予定(記念日含む)を表示する。
+// 予定・シフトが0件でもカード自体は常に表示し、今日が何日か常に分かるようにする。
+// アイテムは既存の renderLongTermItem を再利用し、タップで個別詳細シート(open-event)を開く
+function renderTodaySection() {
+  const agenda = todayAgenda(state, todayStr());
+  const shiftDef = agenda.shift ? SHIFT_DEFS[agenda.shift.code] : null;
+  const shiftRow = shiftDef
+    ? `<div class="today-shift-row">💼 ${escapeHtml(shiftDef.label)}${shiftDef.time ? `(${escapeHtml(shiftDef.time)})` : ''}</div>`
+    : '';
+  const body = agenda.events.length
+    ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
+    : (shiftDef ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
+      ${shiftRow}
+      ${body}
+    </section>
   `;
 }
 
@@ -2587,6 +2635,7 @@ if (typeof window !== 'undefined') {
     isLeapYear,
     occursOnDay,
     eventsOnDay,
+    todayAgenda,
     isEventInMonth,
     fixDraftEndDate,
     fixDraftPublic,
