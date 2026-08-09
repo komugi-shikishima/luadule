@@ -61,17 +61,18 @@ h1,h2,h3{ margin:0; }
 .reminder-item{
   background:#fff; border-left:4px solid var(--primary-dark); padding:10px 12px;
   border-radius:var(--radius-sm); box-shadow:var(--shadow-sm); font-size:0.92rem;
+  overflow-wrap:anywhere;
 }
 
 .calendar{ margin:16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:12px; }
 .weekday-row{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; color:var(--text-muted); font-size:0.82rem; margin-bottom:4px; }
 .weekday.sun{ color:#e08a9a; }
 .weekday.sat{ color:#6fa8c9; }
-.month-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+.month-grid{ display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; }
 .day-cell{
   min-height:64px; border:1px solid var(--border); border-radius:var(--radius-sm);
   background:#fff; padding:4px; display:flex; flex-direction:column; align-items:stretch;
-  text-align:left; position:relative;
+  text-align:left; position:relative; min-width:0; overflow:hidden;
 }
 .day-cell.outside{ opacity:0.4; }
 .day-cell.today{ border:2px solid var(--primary); }
@@ -79,7 +80,7 @@ h1,h2,h3{ margin:0; }
 .chip-list{ margin-top:2px; display:flex; flex-direction:column; gap:2px; overflow:hidden; }
 .chip{
   font-size:0.62rem; color:#fff; padding:1px 4px; border-radius:5px; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis;
+  overflow:hidden; text-overflow:ellipsis; max-width:100%; min-width:0;
 }
 .chip-more{ background:var(--text-muted); }
 .empty-state{ text-align:center; color:var(--text-muted); padding:24px 12px; }
@@ -112,8 +113,8 @@ h1,h2,h3{ margin:0; }
   border-left:4px solid var(--primary); background:var(--bg); border-radius:var(--radius-sm);
   padding:10px; margin-bottom:8px;
 }
-.event-item-title{ font-weight:700; }
-.event-item-meta{ font-size:0.8rem; color:var(--text-muted); }
+.event-item-title{ font-weight:700; overflow-wrap:anywhere; }
+.event-item-meta{ font-size:0.8rem; color:var(--text-muted); overflow-wrap:anywhere; }
 .empty-hint{ color:var(--text-muted); font-size:0.9rem; }
 
 .state-box{ margin:40px 16px; text-align:center; color:var(--text-muted); }
