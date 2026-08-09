@@ -23,6 +23,7 @@
   --secondary-light:#cdeaf3;
   --cat-event:#e893ac;
   --cat-goods:#f8b6c8;
+  --cat-ticket:#9ccc65;
   --cat-stream:#a5d8e6;
   --cat-members:#7cc3d8;
   --cat-call:#c9a8e0;
@@ -264,6 +265,7 @@ const LOCK_HASH = '713d843e7ce6696676256ece9a8d22c26d1debbc9275309601732f9537452
 const CATEGORIES = {
   event:    { kind: 'oshi',     label: 'イベント',   colorVar: '--cat-event',    period: true },
   goods:    { kind: 'oshi',     label: 'グッズ販売', colorVar: '--cat-goods',    period: true },
+  ticket:   { kind: 'oshi',     label: 'チケット販売', colorVar: '--cat-ticket', period: true },
   stream:   { kind: 'oshi',     label: '配信',       colorVar: '--cat-stream',   period: false },
   members:  { kind: 'oshi',     label: '限定配信',   colorVar: '--cat-members',  period: false },
   call:     { kind: 'oshi',     label: 'FB通話',     colorVar: '--cat-call',     period: false },
@@ -285,8 +287,8 @@ const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, 'today-time': 3, 'shift-tomorrow': 4 };
 const GIST_DESCRIPTION = 'oshical-sync-v1';
 const GIST_FILENAME = 'oshical.enc.json';
-// 公開カレンダー(§12): 公開できるのは推しカテゴリのうちメンバー限定でない4種のみ
-const PUBLIC_CATEGORIES = ['event', 'goods', 'stream', 'other'];
+// 公開カレンダー(§12): 公開できるのは推しカテゴリのうちメンバー限定でない5種のみ
+const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other'];
 const GIST_PUBLIC_DESCRIPTION = 'oshical-public-v1';
 const GIST_PUBLIC_FILENAME = 'oshical-public.json';
 const GITHUB_API = 'https://api.github.com';
@@ -1225,6 +1227,7 @@ function defaultCategoryColors(primary, secondary) {
   return {
     event: adjustLightness(primary, -12),
     goods: primary,
+    ticket: '#9ccc65', // 黄緑(テーマに依存しない固定既定色)
     stream: secondary,
     members: adjustLightness(secondary, -12),
     call: mixHue(primary, secondary),
@@ -1276,6 +1279,7 @@ let uiState = {
   selectedDate: null,
   sheet: null, // null | 'day' | 'form' | 'settings'
   editingEvent: null,
+  formOriginal: null, // 予定フォームを開いた時点のスナップショット(誤タップで閉じない判定に使う)
   formErrors: {},
   syncMessage: '',
   toast: null,
@@ -1299,6 +1303,23 @@ function showToast(message) {
     uiState = { ...uiState, toast: null };
     render();
   }, 3500);
+}
+
+// isDraftDirty: 予定フォームの下書きが「開いた時点」から変更されているかを返す純関数。
+// 変更がある間は外側タップ/✕/Escで閉じず、キャンセルボタンでのみ閉じられる(誤タップによる入力消失防止)
+function isDraftDirty(draft, original) {
+  if (!draft || !original) return false;
+  const fields = ['kind', 'category', 'title', 'startDate', 'endDate', 'time', 'endTime', 'memo', 'public', 'publicMemo'];
+  return fields.some((f) => draft[f] !== original[f]);
+}
+
+// requestCloseSheet: シートを閉じる要求。入力中の予定フォームだけはブロックして案内を出す
+function requestCloseSheet() {
+  if (uiState.sheet === 'form' && isDraftDirty(uiState.editingEvent, uiState.formOriginal)) {
+    showToast('入力中です。閉じるには「キャンセル」を押してください');
+    return;
+  }
+  setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {} });
 }
 
 function createDraftEvent(dateStr) {
@@ -1568,7 +1589,7 @@ function renderEventFormSheet() {
         <textarea id="ev-memo" data-field="memo" rows="3" maxlength="500">${escapeHtml(ev.memo || '')}</textarea>
       </div>
       <div class="form-actions">
-        <button type="button" class="btn-secondary" data-action="close-sheet">キャンセル</button>
+        <button type="button" class="btn-secondary" data-action="cancel-form">キャンセル</button>
         <button type="submit" class="btn-primary">保存</button>
       </div>
     </form>
@@ -1886,7 +1907,7 @@ function handleSaveEvent() {
     };
     setState((prev) => ({ events: [...prev.events, newEvent] }));
   }
-  setUiState({ sheet: 'day', editingEvent: null, formErrors: {} });
+  setUiState({ sheet: 'day', editingEvent: null, formOriginal: null, formErrors: {} });
 }
 
 function handleDeleteEvent(id) {
@@ -1994,7 +2015,11 @@ function handleAction(el) {
       setUiState({ sheet: 'settings', syncMessage: '' });
       break;
     case 'close-sheet':
-      setUiState({ sheet: null, editingEvent: null, formErrors: {} });
+      requestCloseSheet();
+      break;
+    case 'cancel-form':
+      // キャンセルボタンは入力中でも常に閉じられる唯一の出口
+      setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {} });
       break;
     case 'prev-month': {
       const { y, m } = parseDateStr(addMonths(fmtDate(uiState.year, uiState.month, 1), -1));
@@ -2019,12 +2044,13 @@ function handleAction(el) {
       break;
     case 'add-event': {
       const dateStr = el.dataset.date || uiState.selectedDate || todayStr();
-      setUiState({ sheet: 'form', editingEvent: createDraftEvent(dateStr), formErrors: {} });
+      const draft = createDraftEvent(dateStr);
+      setUiState({ sheet: 'form', editingEvent: draft, formOriginal: { ...draft }, formErrors: {} });
       break;
     }
     case 'edit-event': {
       const ev = state.events.find((x) => x.id === el.dataset.id);
-      if (ev) setUiState({ sheet: 'form', editingEvent: { ...ev }, formErrors: {} });
+      if (ev) setUiState({ sheet: 'form', editingEvent: { ...ev }, formOriginal: { ...ev }, formErrors: {} });
       break;
     }
     case 'delete-event':
@@ -2073,7 +2099,7 @@ function handleAction(el) {
 function onAppClick(e) {
   const backdrop = e.target.closest('.sheet-backdrop');
   if (backdrop && e.target === backdrop) {
-    setUiState({ sheet: null, editingEvent: null, formErrors: {} });
+    requestCloseSheet();
     return;
   }
   const actionEl = e.target.closest('[data-action]');
@@ -2122,7 +2148,7 @@ function onAppSubmit(e) {
 
 function onAppKeydown(e) {
   if (e.key === 'Escape' && uiState.sheet) {
-    setUiState({ sheet: null, editingEvent: null, formErrors: {} });
+    requestCloseSheet();
   }
 }
 
@@ -2299,6 +2325,7 @@ if (typeof window !== 'undefined') {
     isEventInMonth,
     fixDraftEndDate,
     fixDraftPublic,
+    isDraftDirty,
     buildPublicPayload,
     validateEventInput,
     computeReminders,

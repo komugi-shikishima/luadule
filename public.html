@@ -139,10 +139,10 @@ h1,h2,h3{ margin:0; }
 
 /* ---------- 1. CONSTANTS ---------- */
 const PUBLIC_GIST_FILENAME = 'oshical-public.json';
-const ALLOWED_CATEGORIES = ['event', 'goods', 'stream', 'other'];
-const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', stream: '配信', other: 'その他' };
-const CATEGORY_PERIOD = { event: true, goods: true, stream: false, other: true };
-const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', stream: '#a5d8e6', other: '#b8b8b8' };
+const ALLOWED_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other'];
+const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', other: 'その他' };
+const CATEGORY_PERIOD = { event: true, goods: true, ticket: true, stream: false, other: true };
+const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', ticket: '#9ccc65', stream: '#a5d8e6', other: '#b8b8b8' };
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
