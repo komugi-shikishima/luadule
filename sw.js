@@ -2,14 +2,15 @@
 
 /*
  * 推し活カレンダー Service Worker
- * オフラインキャッシュ用の最小限実装。
- * - install: index.html と自身をキャッシュ(cache-first)
+ * オフラインキャッシュ実装(v13からnetwork-first)。
+ * - install: index.html / public.html と自身をキャッシュ
  * - activate: 古いバージョンのキャッシュを破棄
- * - fetch: GETリクエストのみキャッシュ優先で処理し、ネットワークにフォールバックする
- * - バージョン文字列(CACHE_VERSION)を上げることでキャッシュを更新できる
+ * - fetch: まずネットワークから最新を取得して表示(+キャッシュ更新)。
+ *          オフライン時のみキャッシュにフォールバックする。
+ *          これにより「アップロードした更新が古いキャッシュに隠れる」問題を防ぐ
  */
 
-const CACHE_VERSION = 'v12';
+const CACHE_VERSION = 'v13';
 const CACHE_NAME = `oshical-cache-${CACHE_VERSION}`;
 const PRECACHE_URLS = ['./', './index.html', './sw.js', './public.html'];
 
@@ -44,15 +45,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
+  // network-first: 最新を取りに行き、成功したらキャッシュも更新。失敗(オフライン)時のみキャッシュを返す
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-
-      return fetch(event.request)
-        .then((response) => {
-          if (!response || response.status !== 200 || response.type !== 'basic') {
-            return response;
-          }
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
           const responseClone = response.clone();
           caches
             .open(CACHE_NAME)
@@ -60,12 +57,15 @@ self.addEventListener('fetch', (event) => {
             .catch((err) => {
               console.error('[sw] キャッシュの更新に失敗しました', err);
             });
-          return response;
-        })
-        .catch((err) => {
-          console.error('[sw] ネットワーク取得に失敗しました(オフラインの可能性)', err);
-          throw err;
+        }
+        return response;
+      })
+      .catch(() => {
+        console.info('[sw] オフラインのためキャッシュから表示します');
+        return caches.match(event.request).then((cached) => {
+          if (cached) return cached;
+          throw new Error('オフラインでキャッシュもありません');
         });
-    })
+      })
   );
 });

@@ -52,7 +52,7 @@ body{
   font-family:var(--font);
   color:var(--text);
   min-height:100vh;
-  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%) fixed;
   min-height:100vh;
   -webkit-tap-highlight-color:transparent;
 }
@@ -391,9 +391,9 @@ function formatEventSchedule(ev) {
   if (!ev) return '';
   const multi = ev.startDate !== ev.endDate;
   if (multi) {
-    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ev.time : ''}`;
+    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ` ${ev.time}` : ''}`;
     const end = `${formatDateLabel(ev.endDate)}${ev.endTime ? ` ${ev.endTime}まで` : ''}`;
-    return `${start}〜${end}`;
+    return `${start}〜 ${end}`;
   }
   if (!ev.time && !ev.endTime) return '';
   if (!ev.time) return `${ev.endTime}まで`;
@@ -1247,8 +1247,8 @@ function applyTheme(settings) {
   root.setProperty('--secondary-dark', adjustLightness(secondary, -15));
   root.setProperty('--secondary-light', mixWithWhite(secondary, 0.55));
   root.setProperty('--bg', mixWithWhite(primary, 0.88));
-  root.setProperty('--bg-top', mixWithWhite(primary, 0.55));
-  root.setProperty('--bg-bottom', mixWithWhite(secondary, 0.55));
+  root.setProperty('--bg-top', mixWithWhite(primary, 0.3));
+  root.setProperty('--bg-bottom', mixWithWhite(secondary, 0.3));
   const effective = computeEffectiveColors(settings);
   Object.keys(effective.cat).forEach((key) => {
     root.setProperty(CATEGORIES[key].colorVar, effective.cat[key]);

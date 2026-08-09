@@ -33,7 +33,7 @@ html,body{margin:0;padding:0;}
 body{
   font-family:var(--font);
   color:var(--text);
-  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%) fixed;
   min-height:100vh;
   -webkit-tap-highlight-color:transparent;
 }
@@ -260,8 +260,8 @@ function applyPublicTheme(colors) {
   const root = document.documentElement.style;
   const top = safeColor(colors && colors.goods, '#f8b6c8');
   const bottom = safeColor(colors && colors.stream, '#a5d8e6');
-  root.setProperty('--bg-top', mixWithWhite(top, 0.55));
-  root.setProperty('--bg-bottom', mixWithWhite(bottom, 0.55));
+  root.setProperty('--bg-top', mixWithWhite(top, 0.3));
+  root.setProperty('--bg-bottom', mixWithWhite(bottom, 0.3));
   root.setProperty('--bg', mixWithWhite(top, 0.88));
 }
 
@@ -271,9 +271,9 @@ function formatEventSchedule(ev) {
   if (!ev) return '';
   const multi = ev.startDate !== ev.endDate;
   if (multi) {
-    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ev.time : ''}`;
+    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ` ${ev.time}` : ''}`;
     const end = `${formatDateLabel(ev.endDate)}${ev.endTime ? ` ${ev.endTime}まで` : ''}`;
-    return `${start}〜${end}`;
+    return `${start}〜 ${end}`;
   }
   if (!ev.time && !ev.endTime) return '';
   if (!ev.time) return `${ev.endTime}まで`;
