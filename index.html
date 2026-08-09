@@ -443,6 +443,19 @@ function formatEventSchedule(ev) {
   return `${ev.time}〜${ev.endTime || ''}`;
 }
 
+// formatEventScheduleWithDate: 一覧アイテム(今月のイベント予定/販売期間中一覧/今日の予定)専用の日時表記。
+// 期間もの・anniversaryは formatEventSchedule と同じ結果を返す(既に日付が入っているため)。
+// 単日(startDate === endDate)のみ formatDateLabel の日付を先頭に付ける。
+// formatEventSchedule 自体は変更しない(詳細シート/通知/公開ページの詳細表示は従来通り)
+function formatEventScheduleWithDate(ev) {
+  if (!ev) return '';
+  if (ev.category === 'anniversary') return formatEventSchedule(ev);
+  const multi = ev.startDate !== ev.endDate;
+  if (multi) return formatEventSchedule(ev);
+  const timePart = formatEventSchedule(ev);
+  return `${formatDateLabel(ev.startDate)}${timePart ? ` ${timePart}` : ''}`;
+}
+
 /* =========================================================
  * 3. store (load/save/setState、マイグレーション枠)
  * ========================================================= */
@@ -1616,7 +1629,7 @@ function renderLongTermItem(ev) {
       <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
       <span class="longterm-body">
         <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
-        <span class="longterm-item-schedule">${escapeHtml(cat.label)}・${escapeHtml(formatEventSchedule(ev))}</span>
+        <span class="longterm-item-schedule">${escapeHtml(cat.label)}・${escapeHtml(formatEventScheduleWithDate(ev))}</span>
       </span>
     </button>
   `;
@@ -2612,6 +2625,7 @@ if (typeof window !== 'undefined') {
     STORAGE_KEYS,
     PUBLIC_CATEGORIES,
     formatEventSchedule,
+    formatEventScheduleWithDate,
     // date-utils
     pad2,
     fmtDate,

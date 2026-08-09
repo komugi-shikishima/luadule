@@ -316,6 +316,19 @@ function formatEventSchedule(ev) {
   return `${ev.time}〜${ev.endTime || ''}`;
 }
 
+// formatEventScheduleWithDate: 一覧アイテム(今月のイベント予定/販売期間中一覧/今日の予定)専用の日時表記(index.htmlと同一仕様)。
+// 期間もの・anniversaryは formatEventSchedule と同じ結果を返す(既に日付が入っているため)。
+// 単日(startDate === endDate)のみ formatDateLabel の日付を先頭に付ける。
+// formatEventSchedule 自体は変更しない(詳細シート/通知/公開ページの詳細表示は従来通り)
+function formatEventScheduleWithDate(ev) {
+  if (!ev) return '';
+  if (ev.category === 'anniversary') return formatEventSchedule(ev);
+  const multi = ev.startDate !== ev.endDate;
+  if (multi) return formatEventSchedule(ev);
+  const timePart = formatEventSchedule(ev);
+  return `${formatDateLabel(ev.startDate)}${timePart ? ` ${timePart}` : ''}`;
+}
+
 // linkifyText: エスケープ済みテキスト中の https?:// のURLだけを安全な<a>に変換する
 // 必ず先にescapeHtmlを通すこと。javascript:等は正規表現で最初から除外される
 function linkifyText(str) {
@@ -663,7 +676,7 @@ function renderLongTermItem(ev) {
       <span class="longterm-bar" style="background:${color}"></span>
       <span class="longterm-body">
         <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
-        <span class="longterm-item-schedule">${escapeHtml(catLabel)}・${escapeHtml(formatEventSchedule(ev))}</span>
+        <span class="longterm-item-schedule">${escapeHtml(catLabel)}・${escapeHtml(formatEventScheduleWithDate(ev))}</span>
       </span>
     </button>
   `;
