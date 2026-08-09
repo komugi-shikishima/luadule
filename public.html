@@ -85,7 +85,23 @@ h1,h2,h3{ margin:0; }
   overflow:hidden; text-overflow:ellipsis; max-width:100%; min-width:0;
 }
 .chip-more{ background:var(--text-muted); }
+.period-lines{ margin-top:auto; display:flex; flex-direction:column; gap:2px; padding-top:2px; }
+.period-line{ height:3px; border-radius:2px; width:100%; opacity:0.85; }
 .empty-state{ text-align:center; color:var(--text-muted); padding:24px 12px; }
+
+/* 長期予定の一覧(カレンダー上部) */
+.longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
+.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
+.longterm-range{ font-size:0.8rem; color:var(--text-muted); font-weight:600; }
+.longterm-list{ display:flex; flex-direction:column; gap:6px; }
+.longterm-item{
+  display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
+  background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
+}
+.longterm-bar{ width:5px; border-radius:3px; flex-shrink:0; }
+.longterm-body{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+.longterm-item-title{ font-size:0.92rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.longterm-item-schedule{ font-size:0.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
 
 .legend{ margin:0 16px 16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:12px 16px; }
 .legend h3{ font-size:0.85rem; color:var(--text-muted); margin-bottom:8px; }
@@ -342,7 +358,8 @@ function sanitizeEvent(ev) {
   const endTime = typeof ev.endTime === 'string' && TIME_RE.test(ev.endTime) ? ev.endTime : '';
   const id = typeof ev.id === 'string' ? ev.id : '';
   const memo = typeof ev.memo === 'string' ? ev.memo.slice(0, 500) : '';
-  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time, endTime, memo };
+  const longTerm = ev.longTerm === true; // 旧形式データ(フィールド無し)は false 扱い
+  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time, endTime, memo, longTerm };
 }
 
 // sanitizePayload: 公開Gist由来データ全体を検証・無害化する純関数
@@ -372,6 +389,19 @@ function isEventInMonth(ev, year, month) {
   return isDateInRange(ev.startDate, monthStart, monthEnd)
     || isDateInRange(ev.endDate, monthStart, monthEnd)
     || (compareDates(ev.startDate, monthStart) <= 0 && compareDates(ev.endDate, monthEnd) >= 0);
+}
+
+// longTermEventsInRange: 上部一覧に出す長期予定(表示中の月の前1ヶ月〜後2ヶ月と重なるもの)を返す純関数
+function longTermEventsInRange(events, year, month) {
+  const first = fmtDate(year, month, 1);
+  const rangeStart = addMonths(first, -1);
+  const endBase = parseDateStr(addMonths(first, 2));
+  const rangeEnd = fmtDate(endBase.y, endBase.m, daysInMonth(endBase.y, endBase.m));
+  return (events || [])
+    .filter((ev) => ev && ev.longTerm === true
+      && compareDates(ev.startDate, rangeEnd) <= 0 && compareDates(ev.endDate, rangeStart) >= 0)
+    .slice()
+    .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
 }
 
 // computeSimpleReminders: computeReminders相当の簡易版。期間ものの最終日前日/当日のみ(§12.7)
@@ -417,6 +447,7 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderReminderBanner()}
+    ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderLegend()}
     ${renderDaySheetOverlay()}
@@ -463,6 +494,38 @@ function renderReminderBanner() {
   `;
 }
 
+// renderLongTermSection: カレンダー上部の長期予定一覧。タップで開始日の詳細シートを開く
+function renderLongTermSection() {
+  const items = longTermEventsInRange(appState.payload.events, appState.year, appState.month);
+  if (!items.length) return '';
+  const first = fmtDate(appState.year, appState.month, 1);
+  const from = parseDateStr(addMonths(first, -1));
+  const to = parseDateStr(addMonths(first, 2));
+  const rangeLabel = from.y === to.y ? `${from.m}月〜${to.m}月` : `${from.y}年${from.m}月〜${to.y}年${to.m}月`;
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">📌 長期予定 <span class="longterm-range">(${escapeHtml(rangeLabel)})</span></h2>
+      <div class="longterm-list">
+        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderLongTermItem(ev) {
+  const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category] || '#b8b8b8');
+  const catLabel = CATEGORY_LABELS[ev.category] || ev.category;
+  return `
+    <button type="button" class="longterm-item" data-action="open-day" data-date="${escapeHtml(ev.startDate)}">
+      <span class="longterm-bar" style="background:${color}"></span>
+      <span class="longterm-body">
+        <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
+        <span class="longterm-item-schedule">${escapeHtml(catLabel)}・${escapeHtml(formatEventSchedule(ev))}</span>
+      </span>
+    </button>
+  `;
+}
+
 function renderCalendar() {
   const weeks = monthGrid(appState.year, appState.month);
   const today = todayStr();
@@ -484,12 +547,15 @@ function renderCalendar() {
 function renderDayCell(cell, today, events) {
   const dayNum = parseDateStr(cell.dateStr).d;
   const dayEvents = eventsOnDay(events, cell.dateStr);
+  // 長期予定はチップにせず、マス下部の細いラインだけで示す(本体アプリと同一仕様)
+  const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
+  const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
   const classes = ['day-cell'];
   if (!cell.inMonth) classes.push('outside');
   if (cell.dateStr === today) classes.push('today');
   const maxChips = 3;
-  const shown = dayEvents.slice(0, maxChips);
-  const extra = dayEvents.length - shown.length;
+  const shown = normalEvents.slice(0, maxChips);
+  const extra = normalEvents.length - shown.length;
   return `
     <button type="button" class="${classes.join(' ')}" data-action="open-day" data-date="${cell.dateStr}">
       <span class="day-num">${dayNum}</span>
@@ -497,6 +563,10 @@ function renderDayCell(cell, today, events) {
         ${shown.map((ev) => renderChip(ev)).join('')}
         ${extra > 0 ? `<div class="chip chip-more">+${extra}</div>` : ''}
       </div>
+      ${longTermEvents.length ? `<div class="period-lines">${longTermEvents.slice(0, 3).map((ev) => {
+        const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category] || '#b8b8b8');
+        return `<span class="period-line" style="background:${color}"></span>`;
+      }).join('')}</div>` : ''}
     </button>
   `;
 }

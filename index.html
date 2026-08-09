@@ -123,7 +123,23 @@ h1,h2,h3{ margin:0; }
   overflow:hidden; text-overflow:ellipsis; max-width:100%; min-width:0;
 }
 .chip-more{ background:var(--text-muted); }
+.period-lines{ margin-top:auto; display:flex; flex-direction:column; gap:2px; padding-top:2px; }
+.period-line{ height:3px; border-radius:2px; width:100%; opacity:0.85; }
 .empty-state{ text-align:center; color:var(--text-muted); padding:24px 12px; }
+
+/* 長期予定の一覧(カレンダー上部) */
+.longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
+.longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
+.longterm-range{ font-size:0.8rem; color:var(--text-muted); font-weight:600; }
+.longterm-list{ display:flex; flex-direction:column; gap:6px; }
+.longterm-item{
+  display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
+  background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
+}
+.longterm-bar{ width:5px; border-radius:3px; flex-shrink:0; }
+.longterm-body{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+.longterm-item-title{ font-size:0.92rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.longterm-item-schedule{ font-size:0.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
 
 /* sheet */
 .sheet-backdrop{
@@ -437,6 +453,7 @@ function normalizeEvent(ev) {
     public: typeof ev.public === 'boolean' ? ev.public : false,
     publicMemo: typeof ev.publicMemo === 'string' ? ev.publicMemo : '',
     endTime: typeof ev.endTime === 'string' ? ev.endTime : '',
+    longTerm: typeof ev.longTerm === 'boolean' ? ev.longTerm : false,
   };
 }
 
@@ -530,6 +547,29 @@ function fixDraftPublic(draft) {
   return { ...draft, public: false };
 }
 
+// fixDraftLongTerm: 単日になった下書きの「長期予定」フラグを自動で外す純関数
+function fixDraftLongTerm(draft) {
+  if (!draft) return draft;
+  if (draft.startDate && draft.endDate && draft.startDate !== draft.endDate) return draft;
+  if (draft.longTerm !== true) return draft;
+  return { ...draft, longTerm: false };
+}
+
+// longTermEventsInRange: 上部一覧に出す長期予定を返す純関数。
+// 対象は「表示中の月の前1ヶ月の初日〜後2ヶ月の末日」と期間が重なる longTerm===true のイベント
+function longTermEventsInRange(targetState, year, month) {
+  const events = (targetState && Array.isArray(targetState.events)) ? targetState.events : [];
+  const first = fmtDate(year, month, 1);
+  const rangeStart = addMonths(first, -1);
+  const endBase = parseDateStr(addMonths(first, 2));
+  const rangeEnd = endOfMonthStr(endBase.y, endBase.m);
+  return events
+    .filter((ev) => ev && !ev.deleted && ev.longTerm === true
+      && compareDates(ev.startDate, rangeEnd) <= 0 && compareDates(ev.endDate, rangeStart) >= 0)
+    .slice()
+    .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+}
+
 // buildPublicPayload: 公開Gistに書き出す平文ペイロードを組み立てる純関数(§12.3)
 // public===true かつ公開可カテゴリのイベントのみ・memoは含めない
 function buildPublicPayload(targetState, now) {
@@ -549,6 +589,7 @@ function buildPublicPayload(targetState, now) {
       time: ev.time || '',
       endTime: ev.endTime || '',
       memo: ev.publicMemo || '', // 公開されるのは「公開用メモ」のみ。自分用メモ(ev.memo)は絶対に含めない
+      longTerm: ev.longTerm === true, // 公開ページでも長期予定は上部一覧+細ライン表示にする
     }));
   return {
     v: 1,
@@ -1309,7 +1350,7 @@ function showToast(message) {
 // 変更がある間は外側タップ/✕/Escで閉じず、キャンセルボタンでのみ閉じられる(誤タップによる入力消失防止)
 function isDraftDirty(draft, original) {
   if (!draft || !original) return false;
-  const fields = ['kind', 'category', 'title', 'startDate', 'endDate', 'time', 'endTime', 'memo', 'public', 'publicMemo'];
+  const fields = ['kind', 'category', 'title', 'startDate', 'endDate', 'time', 'endTime', 'memo', 'public', 'publicMemo', 'longTerm'];
   return fields.some((f) => draft[f] !== original[f]);
 }
 
@@ -1335,6 +1376,7 @@ function createDraftEvent(dateStr) {
     memo: '',
     public: false,
     publicMemo: '',
+    longTerm: false,
   };
 }
 
@@ -1354,6 +1396,7 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderReminderBanner()}
+    ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderSheetOverlay()}
     ${renderToast()}
@@ -1402,6 +1445,37 @@ function renderReminderBanner() {
   `;
 }
 
+// renderLongTermSection: カレンダー上部の長期予定一覧。タップで開始日の詳細シートを開く
+function renderLongTermSection() {
+  const items = longTermEventsInRange(state, uiState.year, uiState.month);
+  if (!items.length) return '';
+  const first = fmtDate(uiState.year, uiState.month, 1);
+  const from = parseDateStr(addMonths(first, -1));
+  const to = parseDateStr(addMonths(first, 2));
+  const rangeLabel = from.y === to.y ? `${from.m}月〜${to.m}月` : `${from.y}年${from.m}月〜${to.y}年${to.m}月`;
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">📌 長期予定 <span class="longterm-range">(${escapeHtml(rangeLabel)})</span></h2>
+      <div class="longterm-list">
+        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderLongTermItem(ev) {
+  const cat = CATEGORIES[ev.category] || CATEGORIES.other;
+  return `
+    <button type="button" class="longterm-item" data-action="open-day" data-date="${escapeHtml(ev.startDate)}">
+      <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
+      <span class="longterm-body">
+        <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
+        <span class="longterm-item-schedule">${escapeHtml(cat.label)}・${escapeHtml(formatEventSchedule(ev))}</span>
+      </span>
+    </button>
+  `;
+}
+
 function renderCalendar() {
   const weeks = monthGrid(uiState.year, uiState.month);
   const today = todayStr();
@@ -1427,13 +1501,16 @@ function renderEmptyState() {
 function renderDayCell(cell, today) {
   const dayNum = parseDateStr(cell.dateStr).d;
   const dayEvents = eventsOnDay(state, cell.dateStr);
+  // 長期予定はチップにせず、マス下部の細いラインだけで示す(視認性のため。詳細は日タップか上部一覧から)
+  const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
+  const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
   const shift = state.shifts[cell.dateStr];
   const classes = ['day-cell'];
   if (!cell.inMonth) classes.push('outside');
   if (cell.dateStr === today) classes.push('today');
   const maxChips = 3;
-  const shown = dayEvents.slice(0, maxChips);
-  const extra = dayEvents.length - shown.length;
+  const shown = normalEvents.slice(0, maxChips);
+  const extra = normalEvents.length - shown.length;
   return `
     <button type="button" class="${classes.join(' ')}" data-action="open-day" data-date="${cell.dateStr}">
       <div class="day-cell-top">
@@ -1444,6 +1521,10 @@ function renderDayCell(cell, today) {
         ${shown.map((ev) => renderChip(ev)).join('')}
         ${extra > 0 ? `<div class="chip chip-more">+${extra}</div>` : ''}
       </div>
+      ${longTermEvents.length ? `<div class="period-lines">${longTermEvents.slice(0, 3).map((ev) => {
+        const cat = CATEGORIES[ev.category] || CATEGORIES.other;
+        return `<span class="period-line" style="background:var(${cat.colorVar})"></span>`;
+      }).join('')}</div>` : ''}
     </button>
   `;
 }
@@ -1574,6 +1655,7 @@ function renderEventFormSheet() {
       </div>
       ${errors.startDate ? `<p class="field-error">${escapeHtml(errors.startDate)}</p>` : ''}
       ${errors.endDate ? `<p class="field-error">${escapeHtml(errors.endDate)}</p>` : ''}
+      ${renderLongTermCheckboxField(ev)}
       <div class="field-row">
         <div class="field">
           <label for="ev-time">開始時刻(任意)</label>
@@ -1593,6 +1675,22 @@ function renderEventFormSheet() {
         <button type="submit" class="btn-primary">保存</button>
       </div>
     </form>
+  `;
+}
+
+// renderLongTermCheckboxField: 開始日と終了日が違う予定にだけ「長期予定として表示」を出す。
+// 日付入力中は全画面再描画をしない(ハマりどころ§編集中の抑制)ため、常にDOMに置いて
+// display切り替えで出し入れする(onAppInputが直接styleを更新する)
+function renderLongTermCheckboxField(ev) {
+  const visible = !!(ev.startDate && ev.endDate && ev.startDate !== ev.endDate);
+  return `
+    <div class="field" id="longterm-field" style="${visible ? '' : 'display:none'}">
+      <label class="switch-row">
+        <input type="checkbox" data-draft-toggle="longTerm" ${ev.longTerm ? 'checked' : ''}>
+        長期予定として表示する
+      </label>
+      <p class="settings-hint">※カレンダー上部の「長期予定」一覧にまとまり、日々のマスには細いラインだけ表示されます</p>
+    </div>
   `;
 }
 
@@ -1876,7 +1974,7 @@ function handleResetColors() {
 }
 
 function handleSaveEvent() {
-  const draft = fixDraftPublic(fixDraftEndDate(uiState.editingEvent));
+  const draft = fixDraftPublic(fixDraftLongTerm(fixDraftEndDate(uiState.editingEvent)));
   const validation = validateEventInput(draft);
   if (!validation.valid) {
     setUiState({ formErrors: validation.errors });
@@ -1902,6 +2000,7 @@ function handleSaveEvent() {
       publicMemo: draft.publicMemo || '',
       endTime: draft.endTime || '',
       public: !!draft.public,
+      longTerm: !!draft.longTerm,
       updatedAt: now,
       deleted: false,
     };
@@ -2062,12 +2161,12 @@ function handleAction(el) {
     case 'set-kind': {
       const kind = el.dataset.value;
       const firstCategory = Object.keys(CATEGORIES).find((k) => CATEGORIES[k].kind === kind);
-      const draft = fixDraftPublic(fixDraftEndDate({ ...uiState.editingEvent, kind, category: firstCategory }));
+      const draft = fixDraftPublic(fixDraftLongTerm(fixDraftEndDate({ ...uiState.editingEvent, kind, category: firstCategory })));
       setUiState({ editingEvent: draft });
       break;
     }
     case 'set-category': {
-      const draft = fixDraftPublic(fixDraftEndDate({ ...uiState.editingEvent, category: el.dataset.value }));
+      const draft = fixDraftPublic(fixDraftLongTerm(fixDraftEndDate({ ...uiState.editingEvent, category: el.dataset.value })));
       setUiState({ editingEvent: draft });
       break;
     }
@@ -2110,8 +2209,18 @@ function onAppClick(e) {
 function onAppInput(e) {
   const field = e.target.dataset.field;
   if (!field || !uiState.editingEvent) return;
-  const draft = fixDraftEndDate({ ...uiState.editingEvent, [field]: e.target.value });
+  const draft = fixDraftLongTerm(fixDraftEndDate({ ...uiState.editingEvent, [field]: e.target.value }));
   setUiStateSilent({ editingEvent: draft });
+  // 日付が変わったら「長期予定」チェック欄の表示だけを直接更新する(全画面再描画はしない)
+  if (field === 'startDate' || field === 'endDate') {
+    const lt = document.getElementById('longterm-field');
+    if (lt) {
+      const visible = !!(draft.startDate && draft.endDate && draft.startDate !== draft.endDate);
+      lt.style.display = visible ? '' : 'none';
+      const cb = lt.querySelector('input[data-draft-toggle="longTerm"]');
+      if (cb) cb.checked = draft.longTerm === true;
+    }
+  }
 }
 
 function onAppChange(e) {
@@ -2134,6 +2243,11 @@ function onAppChange(e) {
   }
   if (e.target.dataset.draftToggle === 'public' && uiState.editingEvent) {
     const draft = fixDraftPublic({ ...uiState.editingEvent, public: e.target.checked });
+    setUiState({ editingEvent: draft });
+    return;
+  }
+  if (e.target.dataset.draftToggle === 'longTerm' && uiState.editingEvent) {
+    const draft = fixDraftLongTerm({ ...uiState.editingEvent, longTerm: e.target.checked });
     setUiState({ editingEvent: draft });
     return;
   }
@@ -2325,6 +2439,8 @@ if (typeof window !== 'undefined') {
     isEventInMonth,
     fixDraftEndDate,
     fixDraftPublic,
+    fixDraftLongTerm,
+    longTermEventsInRange,
     isDraftDirty,
     buildPublicPayload,
     validateEventInput,
