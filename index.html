@@ -394,6 +394,7 @@ function getDefaultState() {
       themeSecondary: '#a5d8e6',
       notifyEnabled: false,
       notifyMorningHour: 7,   // Discord朝通知の時刻(0〜23、-1=送らない)。GitHub Actions側が参照
+      notifyNoonHour: 12,     // Discord昼通知の時刻(内容は朝と同じ「今日のダイジェスト」)
       notifyEveningHour: 20,  // Discord夜通知の時刻(0〜23、-1=送らない)
       publicEnabled: false, // 公開カレンダー(§12)のON/OFF。設定ごと同期され全端末で揃う
       categoryColors: {}, // カテゴリごとの色の上書き。空文字/未設定=テーマから自動導出
@@ -412,6 +413,7 @@ function normalizeEvent(ev) {
     ...ev,
     public: typeof ev.public === 'boolean' ? ev.public : false,
     publicMemo: typeof ev.publicMemo === 'string' ? ev.publicMemo : '',
+    endTime: typeof ev.endTime === 'string' ? ev.endTime : '',
   };
 }
 
@@ -522,6 +524,7 @@ function buildPublicPayload(targetState, now) {
       startDate: ev.startDate,
       endDate: ev.endDate,
       time: ev.time || '',
+      endTime: ev.endTime || '',
       memo: ev.publicMemo || '', // 公開されるのは「公開用メモ」のみ。自分用メモ(ev.memo)は絶対に含めない
     }));
   return {
@@ -577,8 +580,8 @@ function computeReminders(targetState, today) {
       addReminder(ev.id, 'firstday', `🎪 『${ev.title}』今日から!`);
     }
     if (isTimedKind && ev.startDate === today) {
-      const timeLabel = ev.time ? ` ${ev.time}〜` : '';
-      addReminder(ev.id, 'today-time', `📺 『${ev.title}』今日${timeLabel}`);
+      const range = ev.time ? ` ${ev.time}〜${ev.endTime || ''}` : '';
+      addReminder(ev.id, 'today-time', `📺 『${ev.title}』今日${range}`);
     }
   });
 
@@ -1257,6 +1260,7 @@ function createDraftEvent(dateStr) {
     startDate: dateStr,
     endDate: dateStr,
     time: '',
+    endTime: '',
     memo: '',
     public: false,
     publicMemo: '',
@@ -1436,7 +1440,7 @@ function renderShiftButtons(shift) {
 function renderDayEventItem(ev) {
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
   const period = ev.startDate !== ev.endDate ? `${formatDateLabel(ev.startDate)}〜${formatDateLabel(ev.endDate)}` : '';
-  const timeLabel = ev.time || '';
+  const timeLabel = ev.time ? `${ev.time}〜${ev.endTime || ''}` : '';
   return `
     <div class="event-item" style="border-left-color:var(${cat.colorVar})">
       <div class="event-item-main">
@@ -1500,9 +1504,15 @@ function renderEventFormSheet() {
       </div>
       ${errors.startDate ? `<p class="field-error">${escapeHtml(errors.startDate)}</p>` : ''}
       ${errors.endDate ? `<p class="field-error">${escapeHtml(errors.endDate)}</p>` : ''}
-      <div class="field">
-        <label for="ev-time">時刻(任意)</label>
-        <input type="time" id="ev-time" data-field="time" value="${escapeHtml(ev.time || '')}">
+      <div class="field-row">
+        <div class="field">
+          <label for="ev-time">開始時刻(任意)</label>
+          <input type="time" id="ev-time" data-field="time" value="${escapeHtml(ev.time || '')}">
+        </div>
+        <div class="field">
+          <label for="ev-end-time">終了時刻(任意)</label>
+          <input type="time" id="ev-end-time" data-field="endTime" value="${escapeHtml(ev.endTime || '')}">
+        </div>
       </div>
       <div class="field">
         <label for="ev-memo">メモ(自分用・非公開)</label>
@@ -1584,6 +1594,7 @@ function renderSettingsSheet() {
         <h4>Discord通知の時刻</h4>
         <div class="notify-time-row">
           <label>朝${renderHourSelect('notifyMorningHour', settings.notifyMorningHour, 7)}</label>
+          <label>昼${renderHourSelect('notifyNoonHour', settings.notifyNoonHour, 12)}</label>
           <label>夜${renderHourSelect('notifyEveningHour', settings.notifyEveningHour, 20)}</label>
         </div>
         <p class="settings-hint">Discord通知係を設定している場合のみ有効。変更は次の正時から反映されます</p>
@@ -1728,7 +1739,7 @@ function handleSettingChange(key, inputEl) {
     updateSettings({ oshiName: inputEl.value });
     return;
   }
-  if (key === 'notifyMorningHour' || key === 'notifyEveningHour') {
+  if (key === 'notifyMorningHour' || key === 'notifyNoonHour' || key === 'notifyEveningHour') {
     const hour = parseInt(inputEl.value, 10);
     if (Number.isInteger(hour) && hour >= -1 && hour <= 23) {
       updateSettings({ [key]: hour });
@@ -1804,6 +1815,7 @@ function handleSaveEvent() {
       time: draft.time || '',
       memo: draft.memo || '',
       publicMemo: draft.publicMemo || '',
+      endTime: draft.endTime || '',
       public: !!draft.public,
       updatedAt: now,
       deleted: false,
