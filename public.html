@@ -426,13 +426,15 @@ function eventsOnDay(events, dateStr) {
   return (events || []).filter((ev) => ev && occursOnDay(ev, dateStr));
 }
 
-// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(index.htmlと同一仕様。v24)。
+// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(index.htmlと同一仕様。v25)。
 // 公開データにシフトは無いため { dateStr, events } のみを返す。
-// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果を
-// 時刻順(timeがある予定を先にtime昇順、無い予定は後ろに回す)→タイトル昇順(localeCompare)でソートする
+// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果から
+// 長期予定(longTerm===true)を除外したものを、
+// 時刻順(timeがある予定を先にtime昇順、無い予定は後ろに回す)→タイトル昇順(localeCompare)でソートする。
+// 長期予定(longTerm)は「📌 販売期間中 一覧」に出るため、このカードには含めない
 function todayAgenda(events, today) {
   const sorted = eventsOnDay(events, today)
-    .slice()
+    .filter((ev) => ev.longTerm !== true)
     .sort((a, b) => {
       if (a.time && b.time) {
         if (a.time !== b.time) return a.time < b.time ? -1 : 1;

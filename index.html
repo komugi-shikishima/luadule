@@ -573,15 +573,17 @@ function eventsOnDay(targetState, dateStr) {
   return events.filter((ev) => ev && !ev.deleted && occursOnDay(ev, dateStr));
 }
 
-// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(v24)。
-// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果を
+// todayAgenda: ヘッダー直下の「今日の予定」カードに出す当日情報を返す純関数(v25)。
+// events は eventsOnDay(occursOnDayベース。記念日も含む)と同じ抽出結果から
+// 長期予定(longTerm===true)を除外したものを、
 // 時刻順(timeがある予定を先にtime昇順、無い予定は後ろに回す)→タイトル昇順(localeCompare)でソートする。
+// 長期予定(longTerm)は「📌 販売期間中 一覧」に出るため、このカードには含めない
 // shift は targetState.shifts[today] が存在し削除されていなければそのオブジェクト、無ければ null。
 // null安全: targetState が null/undefined でも { dateStr: today, events: [], shift: null } を返す
 function todayAgenda(targetState, today) {
   if (!targetState) return { dateStr: today, events: [], shift: null };
   const events = eventsOnDay(targetState, today)
-    .slice()
+    .filter((ev) => ev.longTerm !== true)
     .sort((a, b) => {
       if (a.time && b.time) {
         if (a.time !== b.time) return a.time < b.time ? -1 : 1;
