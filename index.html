@@ -2416,6 +2416,170 @@ function truncateToWidth(ctx, text, maxWidth) {
   return `${str.slice(0, low)}…`;
 }
 
+// renderShareCanvas: 「今日の予定」共有画像の高さ計算と実描画を1つの関数に統合したもの。
+// measureOnly=true(通常はctx=nullと併用)のときはY座標を進めるだけでctxへの描画命令を一切実行せず、
+// measureOnly=falseのときは同じY座標の積み上げロジックで実際に描画する。
+// 「高さ計算パス」と「実描画パス」を別々に書くとズレが生じるため、この関数を2回呼ぶことで
+// 両者が常に同じコードパスを通るようにし、ズレを構造的に防止する。
+// 全テキストはctx.textBaseline='top'(呼び出し側で設定済み)を前提に、Y座標は要素の上端で統一する。
+// 戻り値: { height, cardHeight, boxes }
+//   height     = 署名まで含めた画像全体の必要高さ(px)
+//   cardHeight = 白い角丸カードの必要高さ(px)
+//   boxes      = 各要素の { label, y, height } のダンプ(レイアウト検証用。重なり確認に使う)
+function renderShareCanvas(ctx, lines, layout, measureOnly) {
+  const { title, dateLabel, noticeRows, items } = lines;
+  const { width, margin, innerX, innerWidth, primary } = layout;
+
+  const boxes = [];
+  const draw = (fn) => { if (!measureOnly) fn(); };
+  const recordBox = (label, boxY, boxHeight) => { boxes.push({ label, y: boxY, height: boxHeight }); };
+
+  // --- レイアウト定数(textBaseline='top'前提。すべて要素の上端を基準にしたY座標で計算する) ---
+  const CARD_PADDING_TOP = 32;
+  const CARD_PADDING_BOTTOM = 32;
+  const CARD_MIN_HEIGHT = 280;
+  const TITLE_HEIGHT = 20;
+  const GAP_TITLE_TO_HEADING = 8;
+  const HEADING_HEIGHT = 34;
+  const GAP_HEADING_TO_DATE = 6;
+  const DATE_HEIGHT = 22;
+  const GAP_DATE_TO_NEXT = 20;
+  const NOTICE_LABEL_HEIGHT = 20;
+  const GAP_LABEL_TO_PILLS = 14; // 「お知らせ」ラベルと最初の帯の間隔(最低12pxの要件に対し余裕を持たせる)
+  const PILL_TEXT_HEIGHT = 18;
+  const PILL_PADDING_Y = 10;
+  const PILL_HEIGHT = PILL_TEXT_HEIGHT + PILL_PADDING_Y * 2; // テキスト行の高さ+上下パディング
+  const GAP_BETWEEN_PILLS = 8;
+  const GAP_NOTICES_TO_NEXT = 20;
+  const ITEM_TITLE_HEIGHT = 22;
+  const GAP_ITEM_TITLE_META = 4;
+  const ITEM_META_HEIGHT = 16;
+  const ITEM_BLOCK_HEIGHT = ITEM_TITLE_HEIGHT + GAP_ITEM_TITLE_META + ITEM_META_HEIGHT;
+  const GAP_BETWEEN_ITEMS = 16;
+  const EMPTY_MESSAGE_HEIGHT = 22;
+  const CARD_TO_SIGNATURE_GAP = 24;
+  const SIGNATURE_HEIGHT = 16;
+
+  let y = margin + CARD_PADDING_TOP;
+  const cardContentTop = y;
+
+  // --- タイトル(推しの名前) ---
+  draw(() => {
+    ctx.fillStyle = '#999999';
+    ctx.font = '400 15px sans-serif';
+    ctx.fillText(truncateToWidth(ctx, title, innerWidth), innerX, y);
+  });
+  recordBox('title', y, TITLE_HEIGHT);
+  y += TITLE_HEIGHT + GAP_TITLE_TO_HEADING;
+
+  // --- 見出し(絵文字は使わない方針) ---
+  draw(() => {
+    ctx.fillStyle = '#333333';
+    ctx.font = '700 26px sans-serif';
+    ctx.fillText('今日の予定', innerX, y);
+  });
+  recordBox('heading', y, HEADING_HEIGHT);
+  y += HEADING_HEIGHT + GAP_HEADING_TO_DATE;
+
+  // --- 日付 ---
+  draw(() => {
+    ctx.fillStyle = '#666666';
+    ctx.font = '400 16px sans-serif';
+    ctx.fillText(dateLabel, innerX, y);
+  });
+  recordBox('date', y, DATE_HEIGHT);
+  y += DATE_HEIGHT + GAP_DATE_TO_NEXT;
+
+  // --- お知らせ(リマインド)セクション: 日付の下・予定リストの上。
+  // shift-tomorrow(自分のシフト)・自分の予定・非公開カテゴリ由来のリマインドはbuildShareLinesの
+  // 時点で既に除外済みなのでここには出てこない ---
+  if (noticeRows.length) {
+    draw(() => {
+      ctx.fillStyle = '#777777';
+      ctx.font = '700 14px sans-serif';
+      ctx.fillText('お知らせ', innerX, y);
+    });
+    recordBox('notice-label', y, NOTICE_LABEL_HEIGHT);
+    y += NOTICE_LABEL_HEIGHT + GAP_LABEL_TO_PILLS;
+
+    const noticeAccent = adjustLightness(primary, -15);
+    const noticeBg = mixWithWhite(primary, 0.85);
+    noticeRows.forEach((text, index) => {
+      const pillY = y;
+      draw(() => {
+        drawRoundedRect(ctx, innerX, pillY, innerWidth, PILL_HEIGHT, 8);
+        ctx.fillStyle = noticeBg;
+        ctx.fill();
+        ctx.fillStyle = noticeAccent;
+        drawRoundedRect(ctx, innerX + 8, pillY + (PILL_HEIGHT - PILL_TEXT_HEIGHT) / 2, 4, PILL_TEXT_HEIGHT, 2);
+        ctx.fill();
+        ctx.fillStyle = '#444444';
+        ctx.font = '600 14px sans-serif';
+        ctx.fillText(truncateToWidth(ctx, text, innerWidth - 40), innerX + 22, pillY + PILL_PADDING_Y);
+      });
+      recordBox(`notice-pill-${index}`, pillY, PILL_HEIGHT);
+      y += PILL_HEIGHT + GAP_BETWEEN_PILLS;
+    });
+    y += GAP_NOTICES_TO_NEXT - GAP_BETWEEN_PILLS;
+  }
+
+  // --- 予定リスト(公開用メモ・自分用メモ・自分の予定・非公開カテゴリは描画しない) ---
+  if (!items.length) {
+    const messageY = y;
+    draw(() => {
+      ctx.fillStyle = '#999999';
+      ctx.font = '400 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('今日の予定はありません', width / 2, messageY);
+      ctx.textAlign = 'left';
+    });
+    recordBox('empty-message', messageY, EMPTY_MESSAGE_HEIGHT);
+    y += EMPTY_MESSAGE_HEIGHT;
+  } else {
+    items.forEach((item, index) => {
+      const itemY = y;
+      draw(() => {
+        ctx.fillStyle = item.color;
+        drawRoundedRect(ctx, innerX, itemY, 5, ITEM_BLOCK_HEIGHT, 4);
+        ctx.fill();
+        ctx.fillStyle = '#333333';
+        ctx.font = '700 17px sans-serif';
+        ctx.fillText(truncateToWidth(ctx, item.title, innerWidth - 20), innerX + 16, itemY);
+        ctx.fillStyle = '#888888';
+        ctx.font = '400 13px sans-serif';
+        ctx.fillText(
+          truncateToWidth(ctx, item.meta, innerWidth - 20),
+          innerX + 16,
+          itemY + ITEM_TITLE_HEIGHT + GAP_ITEM_TITLE_META
+        );
+      });
+      recordBox(`item-${index}`, itemY, ITEM_BLOCK_HEIGHT);
+      y += ITEM_BLOCK_HEIGHT + GAP_BETWEEN_ITEMS;
+    });
+    y -= GAP_BETWEEN_ITEMS;
+  }
+
+  const cardContentBottom = y;
+  const cardContentHeight = cardContentBottom - cardContentTop;
+  const cardHeight = Math.max(CARD_PADDING_TOP + cardContentHeight + CARD_PADDING_BOTTOM, CARD_MIN_HEIGHT);
+  const cardBottom = margin + cardHeight;
+
+  // --- 署名(URLは入れない・カードの外側の下に配置) ---
+  const signatureY = cardBottom + CARD_TO_SIGNATURE_GAP;
+  draw(() => {
+    ctx.fillStyle = '#bbbbbb';
+    ctx.font = '400 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ルアジュール', width / 2, signatureY);
+    ctx.textAlign = 'left';
+  });
+  recordBox('signature', signatureY, SIGNATURE_HEIGHT);
+
+  const height = signatureY + SIGNATURE_HEIGHT + margin;
+
+  return { height, cardHeight, boxes };
+}
+
 // handleShareTodayImage: 「今日の予定」をPNG画像として生成し、Twitter添付等のために共有/保存する。
 // Canvas APIのみで自前描画(外部ライブラリ禁止・HTML要素のキャプチャもしない)。
 // 画像には「公開して差し支えない情報」のみを描く:
@@ -2425,139 +2589,62 @@ function truncateToWidth(ctx, text, maxWidth) {
 //  - 絵文字はCanvasのフォント環境によって豆腐(□)になり得るため一切使わず、描画する全テキストに
 //    stripEmoji()を適用する
 // 描画中に全画面render()は呼ばない
+//
+// 高さ計算(1パス目)と実描画(2パス目)は共通のrenderShareCanvas()を通すため、
+// 両者のY座標がズレることは構造的に起こらない
 async function handleShareTodayImage() {
   try {
     const agenda = todayAgenda(state, todayStr());
-    const lines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()), state.events);
+    const rawLines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()), state.events);
 
-    const title = stripEmoji(lines.title);
-    const dateLabel = stripEmoji(lines.dateLabel);
-    const items = lines.items
+    const title = stripEmoji(rawLines.title);
+    const dateLabel = stripEmoji(rawLines.dateLabel);
+    const items = rawLines.items
       .map((item) => ({ ...item, title: stripEmoji(item.title), meta: stripEmoji(item.meta) }))
       .filter((item) => item.title.length > 0 || item.meta.length > 0);
 
     // お知らせ(リマインド)行はここで絵文字を除去して確定させる。
     // 除去後に空文字になった行は描画も高さ計算も対象外にする
-    const noticeRows = lines.reminders
+    const noticeRows = rawLines.reminders
       .map((text) => stripEmoji(text))
       .filter((text) => text.length > 0);
-    const NOTICE_HEADING_HEIGHT = 22;
-    const NOTICE_ROW_HEIGHT = 34;
-    const NOTICE_ROW_GAP = 6;
-    const NOTICE_SECTION_BOTTOM_GAP = 10;
+
+    const lines = { title, dateLabel, noticeRows, items };
 
     const width = 900;
     const margin = 40;
     const innerX = margin + 28;
     const innerWidth = width - margin * 2 - 56;
+    const primary = (state.settings && state.settings.themePrimary) || '#f8b6c8';
+    const secondary = (state.settings && state.settings.themeSecondary) || '#a5d8e6';
+    const layout = { width, margin, innerX, innerWidth, primary, secondary };
 
-    // --- 1パス目: 内容量から先に高さを決める ---
-    let height = margin + 24 + 34 + 26;
-    height += 10;
-    if (noticeRows.length) {
-      height += NOTICE_HEADING_HEIGHT;
-      height += noticeRows.length * (NOTICE_ROW_HEIGHT + NOTICE_ROW_GAP);
-      height += NOTICE_SECTION_BOTTOM_GAP;
-    }
-    height += items.length ? items.length * 58 : 40;
-    height += 30 + margin;
-    height = Math.max(height, 600);
+    // --- 1パス目: ctxなしで内容量から高さを計算する(描画命令は一切実行されない) ---
+    const measured = renderShareCanvas(null, lines, layout, true);
+    const height = measured.height;
 
+    // --- 2パス目: 1パス目で決まった高さで実サイズのcanvasを作り、同じ関数で実描画する ---
     const canvas = document.createElement('canvas');
     canvas.width = width * 2;
     canvas.height = height * 2;
     const ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
+    // 全描画をY=上端基準に統一する(既定のalphabeticのままだとラベルの下端と帯の開始位置がズレる)
+    ctx.textBaseline = 'top';
 
     // --- 背景グラデーション(テーマ色を薄めた既存の流儀と同じ) ---
-    const primary = (state.settings && state.settings.themePrimary) || '#f8b6c8';
-    const secondary = (state.settings && state.settings.themeSecondary) || '#a5d8e6';
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, mixWithWhite(primary, 0.3));
     gradient.addColorStop(1, mixWithWhite(secondary, 0.3));
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
-    // --- 白い角丸カード ---
-    drawRoundedRect(ctx, margin, margin, width - margin * 2, height - margin * 2, 24);
+    // --- 白い角丸カード(高さはコンテンツ量に応じてrenderShareCanvasが決めたcardHeightを使う) ---
+    drawRoundedRect(ctx, margin, margin, width - margin * 2, measured.cardHeight, 24);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
 
-    let y = margin + 40;
-
-    // --- タイトル(推しの名前) ---
-    ctx.fillStyle = '#999999';
-    ctx.font = '400 15px sans-serif';
-    ctx.fillText(truncateToWidth(ctx, title, innerWidth), innerX, y);
-    y += 34;
-
-    // --- 見出し(絵文字は使わない方針) ---
-    ctx.fillStyle = '#333333';
-    ctx.font = '700 26px sans-serif';
-    ctx.fillText('今日の予定', innerX, y);
-    y += 28;
-
-    // --- 日付 ---
-    ctx.fillStyle = '#666666';
-    ctx.font = '400 16px sans-serif';
-    ctx.fillText(dateLabel, innerX, y);
-    y += 30;
-    y += 10;
-
-    // --- お知らせ(リマインド)セクション: 日付の下・予定リストの上。
-    // shift-tomorrow(自分のシフト)・自分の予定・非公開カテゴリ由来のリマインドはbuildShareLinesの
-    // 時点で既に除外済みなのでここには出てこない ---
-    if (noticeRows.length) {
-      ctx.fillStyle = '#777777';
-      ctx.font = '700 14px sans-serif';
-      ctx.fillText('お知らせ', innerX, y);
-      y += NOTICE_HEADING_HEIGHT;
-
-      const noticeAccent = adjustLightness(primary, -15);
-      const noticeBg = mixWithWhite(primary, 0.85);
-      noticeRows.forEach((text) => {
-        drawRoundedRect(ctx, innerX, y - 22, innerWidth, NOTICE_ROW_HEIGHT, 8);
-        ctx.fillStyle = noticeBg;
-        ctx.fill();
-        ctx.fillStyle = noticeAccent;
-        drawRoundedRect(ctx, innerX + 8, y - 17, 4, 22, 2);
-        ctx.fill();
-        ctx.fillStyle = '#444444';
-        ctx.font = '600 14px sans-serif';
-        ctx.fillText(truncateToWidth(ctx, text, innerWidth - 40), innerX + 22, y);
-        y += NOTICE_ROW_HEIGHT + NOTICE_ROW_GAP;
-      });
-      y += NOTICE_SECTION_BOTTOM_GAP;
-    }
-
-    // --- 予定リスト(公開用メモ・自分用メモ・自分の予定・非公開カテゴリは描画しない) ---
-    if (!items.length) {
-      ctx.fillStyle = '#999999';
-      ctx.font = '400 16px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('今日の予定はありません', width / 2, y + 10);
-      ctx.textAlign = 'left';
-    } else {
-      items.forEach((item) => {
-        ctx.fillStyle = item.color;
-        drawRoundedRect(ctx, innerX, y - 16, 5, 40, 4);
-        ctx.fill();
-        ctx.fillStyle = '#333333';
-        ctx.font = '700 17px sans-serif';
-        ctx.fillText(truncateToWidth(ctx, item.title, innerWidth - 20), innerX + 16, y);
-        ctx.fillStyle = '#888888';
-        ctx.font = '400 13px sans-serif';
-        ctx.fillText(truncateToWidth(ctx, item.meta, innerWidth - 20), innerX + 16, y + 20);
-        y += 58;
-      });
-    }
-
-    // --- 署名(URLは入れない) ---
-    ctx.fillStyle = '#bbbbbb';
-    ctx.font = '400 12px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('ルアジュール', width / 2, height - margin + 10);
-    ctx.textAlign = 'left';
+    renderShareCanvas(ctx, lines, layout, false);
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!blob) throw new Error('canvas.toBlobが空を返しました');
@@ -3028,6 +3115,7 @@ if (typeof window !== 'undefined') {
     listLongTermEvents,
     listMonthlyEvents,
     buildShareLines,
+    renderShareCanvas,
     stripEmoji,
     isDraftDirty,
     buildPublicPayload,
