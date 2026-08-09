@@ -88,12 +88,11 @@ h1,h2,h3{ margin:0; }
   background:#fff; box-shadow:var(--shadow-sm); font-size:0.9rem; white-space:nowrap;
 }
 
-/* reminder banner */
-.reminder-banner{ margin:8px 16px 0; display:flex; flex-direction:column; gap:6px; }
-.reminder-item{
-  background:#fff; border-left:4px solid var(--primary-dark); padding:10px 12px;
-  border-radius:var(--radius-sm); box-shadow:var(--shadow-sm); font-size:0.92rem;
-  overflow-wrap:anywhere;
+/* today reminder(今日の予定カード内・最終日系のお知らせのみ。v32) */
+.today-reminder-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
+.today-reminder{
+  background:var(--primary-light); border-left:4px solid var(--primary-dark); padding:8px 10px;
+  border-radius:var(--radius-sm); font-size:0.88rem; overflow-wrap:anywhere;
 }
 
 /* calendar */
@@ -662,8 +661,10 @@ function todayAgenda(targetState, today) {
 //  - 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
 // 第3引数 reminders は computeReminders() の戻り値({ id, eventId, milestone, text }[])。
 // 第4引数 allEvents(state.events)は、リマインドの元イベントが上記の「公開して良い予定」の条件を
-// 満たすかどうかを判定するために使う(r.eventId から元イベントを引く)。milestone==='shift-tomorrow'
-// (自分のシフト)は明示的に除外し、それ以外は元イベントが引けて条件を満たすものだけを残す。
+// 満たすかどうかを判定するために使う(r.eventId から元イベントを引く)。まず filterDeadlineReminders
+// で最終日系(lastday-eve/lastday)のみに絞り(v32、画面表示のお知らせと同じ基準に統一)、
+// milestone==='shift-tomorrow'(自分のシフト。最終日系絞り込み後は原理上含まれないが安全のため
+// 引き続き明示除外)を除いた上で、元イベントが引けて公開条件を満たすものだけを残す。
 // allEvents が渡されない(判定できない)場合は安全側に倒してリマインドを空配列にする。最大6件まで含める
 function buildShareLines(agenda, settings, reminders, allEvents) {
   const s = settings || {};
@@ -685,7 +686,7 @@ function buildShareLines(agenda, settings, reminders, allEvents) {
       const color = effective.cat[ev.category] || effective.cat.other;
       return { title: ev.title, meta, color };
     });
-  const remindersSource = Array.isArray(reminders) ? reminders : [];
+  const remindersSource = filterDeadlineReminders(reminders);
   const eventsSource = Array.isArray(allEvents) ? allEvents : null;
   const publicReminders = remindersSource
     .filter((r) => r && r.milestone !== 'shift-tomorrow')
@@ -866,6 +867,18 @@ function computeReminders(targetState, today) {
   }
 
   return reminders.sort((a, b) => MILESTONE_PRIORITY[a.milestone] - MILESTONE_PRIORITY[b.milestone]);
+}
+
+// filterDeadlineReminders: 画面表示用に、computeReminders() の結果から「最終日系」
+// (lastday-eve: 明日が最終日 / lastday: 今日が最終日)のみを残す純関数。
+// firstday・today-time・anniversary・shift-tomorrow は表示から除外する(お知らせと今日の予定
+// リストの重複表示を避けるため、v32)。ブラウザ通知(processReminders)はこの関数を使わず
+// computeReminders の全件をそのまま使い続ける(通知内容は変更しない)。
+// 元の配列の順序を維持する(computeReminders が既に優先度順にソート済みのため)。
+// null / 非配列 の場合は空配列を返す
+function filterDeadlineReminders(reminders) {
+  if (!Array.isArray(reminders)) return [];
+  return reminders.filter((r) => r && (r.milestone === 'lastday-eve' || r.milestone === 'lastday'));
 }
 
 function mergeEventArrays(localEvents, remoteEvents) {
@@ -1602,7 +1615,6 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderTodaySection()}
-    ${renderReminderBanner()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
     ${renderCalendar()}
@@ -1643,33 +1655,32 @@ function renderHeader() {
   `;
 }
 
-function renderReminderBanner() {
-  const reminders = computeReminders(state, todayStr());
-  if (!reminders.length) return '';
-  return `
-    <div class="reminder-banner">
-      ${reminders.map((r) => `<div class="reminder-item">${escapeHtml(r.text)}</div>`).join('')}
-    </div>
-  `;
-}
-
-// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24)。
+// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24。v32でお知らせ(最終日系
+// リマインドのみ)をカード内に統合し、カード外の独立バナー(旧renderReminderBanner)は廃止した)。
 // 今日固定(表示中の月=uiState.year/monthに依存しない)。今日のシフトと今日の予定(記念日含む)を表示する。
-// 予定・シフトが0件でもカード自体は常に表示し、今日が何日か常に分かるようにする。
-// アイテムは既存の renderLongTermItem を再利用し、タップで個別詳細シート(open-event)を開く
+// お知らせは見出し行の下・シフト行の下・予定リストの上に表示し、filterDeadlineReminders で
+// 最終日系(lastday-eve/lastday)のみに絞る(配信開始・記念日などは今日の予定リスト側と重複するため
+// 表示しない。ブラウザ通知processRemindersは従来通り全種類を通知する)。お知らせが0件なら何も出さず
+// 高さも取らない。予定・シフト・お知らせが全て0件のときだけ「今日の予定はありません」を表示する
 function renderTodaySection() {
-  const agenda = todayAgenda(state, todayStr());
+  const today = todayStr();
+  const agenda = todayAgenda(state, today);
   const shiftDef = agenda.shift ? SHIFT_DEFS[agenda.shift.code] : null;
   const shiftRow = shiftDef
     ? `<div class="today-shift-row">💼 ${escapeHtml(shiftDef.label)}${shiftDef.time ? `(${escapeHtml(shiftDef.time)})` : ''}</div>`
     : '';
+  const reminders = filterDeadlineReminders(computeReminders(state, today));
+  const reminderHtml = reminders.length
+    ? `<div class="today-reminder-list">${reminders.map((r) => `<div class="today-reminder">${escapeHtml(r.text)}</div>`).join('')}</div>`
+    : '';
   const body = agenda.events.length
     ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
-    : (shiftDef ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
+    : (shiftDef || reminders.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
   return `
     <section class="longterm-section">
       <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
       ${shiftRow}
+      ${reminderHtml}
       ${body}
       <button type="button" class="btn-secondary today-share-btn" data-action="share-today-image">📷 画像を保存</button>
     </section>
@@ -3022,6 +3033,7 @@ if (typeof window !== 'undefined') {
     buildPublicPayload,
     validateEventInput,
     computeReminders,
+    filterDeadlineReminders,
     mergeEventArrays,
     mergeShiftMaps,
     mergeData,

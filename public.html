@@ -558,6 +558,16 @@ function computeSimpleReminders(events, today) {
   return reminders.sort((a, b) => MILESTONE_PRIORITY[a.milestone] - MILESTONE_PRIORITY[b.milestone]);
 }
 
+// filterDeadlineReminders: 画面表示用に、computeSimpleReminders() の結果から「最終日系」
+// (lastday-eve: 明日が最終日 / lastday: 今日が最終日)のみを残す純関数(本体index.htmlの同名関数と
+// 同一仕様)。firstday・today-time・anniversaryは今日の予定リストと重複するため表示から除外する
+// (v32)。computeSimpleReminders 自体は将来の利用のため全種類を返したまま変更しない。
+// 元の配列の順序を維持する。null / 非配列 の場合は空配列を返す
+function filterDeadlineReminders(reminders) {
+  if (!Array.isArray(reminders)) return [];
+  return reminders.filter((r) => r && (r.milestone === 'lastday-eve' || r.milestone === 'lastday'));
+}
+
 /* ---------- 6. state(画面の一時状態のみ。永続化しない) ---------- */
 let appState = {
   status: 'loading', // 'loading' | 'error' | 'ready'
@@ -626,7 +636,9 @@ function renderHeader() {
 }
 
 // renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24。v31でお知らせ(リマインド)を
-// カード内に統合し、カード外の独立バナー(旧renderReminderBanner)は廃止した)。
+// カード内に統合し、カード外の独立バナー(旧renderReminderBanner)は廃止した。v32でお知らせを
+// 最終日系(lastday-eve/lastday)のみに絞り、配信開始・記念日などは今日の予定リスト側と重複するため
+// 表示から外した)。
 // 公開データにシフトは無いため予定一覧のみを表示する。今日固定(表示中の月に依存しない)。
 // リマインドは見出しの下・予定リストの上に表示し、0件なら何も出さない。
 // 予定が0件でもリマインドがあれば「今日の予定はありません」は出さずリマインドのみ表示する。
@@ -634,7 +646,7 @@ function renderHeader() {
 function renderTodaySection() {
   const today = todayStr();
   const agenda = todayAgenda(appState.payload.events, today);
-  const reminders = computeSimpleReminders(appState.payload.events, today);
+  const reminders = filterDeadlineReminders(computeSimpleReminders(appState.payload.events, today));
   const reminderHtml = reminders.length
     ? `<div class="today-reminder-list">${reminders.map((r) => `<div class="today-reminder">${escapeHtml(r.text)}</div>`).join('')}</div>`
     : '';
