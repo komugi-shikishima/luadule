@@ -1,24 +1,26 @@
 # =============================================================
-# ルアジュール Discord通知ワークフロー
-# リポジトリに「.github/workflows/notify.yml」という名前で保存すると、
-# 毎朝7時と夜20時(日本時間)に予定のリマインドをDiscordへ送ります。
+# ルアジュール Discord通知ワークフロー (v2)
+# リポジトリに「.github/workflows/notify.yml」という名前で保存します。
+#
+# v2からの通知時刻は、アプリの ⚙設定 →「通知」→「Discord通知の時刻」で
+# 変更できます(このファイルの編集は不要)。毎時0分に起動し、アプリで
+# 設定した時刻(日本時間)と一致したときだけDiscordへ送信します。
 #
 # 必要なSecrets(リポジトリのSettings → Secrets and variables → Actions):
 #   LUADULE_GIST_ID    … データ置き場(oshical-sync-v1)のGist ID
 #   LUADULE_PASSPHRASE … アプリで決めた合言葉
 #   LUADULE_WEBHOOK    … DiscordのWebhook URL
 #
-# ※時刻を変えたいときは下の cron を編集(UTC表記。日本時間-9時間)
-#   例: 朝6時なら '0 21 * * *'、夜21時なら '0 12 * * *'
-# ※GitHubの仕様で、実際の実行は指定時刻から数分〜1時間ほど遅れることがあります
+# ※Actionsタブから手動実行(Run workflow)すると、時刻に関係なく
+#   朝の通知を1回送ります(動作テスト用)
+# ※GitHubの仕様で、実行は毎時0分から数分〜1時間ほど遅れることがあります
 # =============================================================
 name: Luadule Discord Notify
 
 on:
   schedule:
-    - cron: '0 22 * * *' # 朝 7:00 JST
-    - cron: '0 11 * * *' # 夜 20:00 JST
-  workflow_dispatch: # Actionsタブから手動実行(動作テスト用)
+    - cron: '0 * * * *' # 毎時起動(送信するかはアプリの設定時刻で判定)
+  workflow_dispatch: # 手動実行(テスト用・常に朝の通知を送る)
 
 permissions:
   contents: write
@@ -38,21 +40,26 @@ jobs:
           GIST_ID: ${{ secrets.LUADULE_GIST_ID }}
           PASSPHRASE: ${{ secrets.LUADULE_PASSPHRASE }}
           WEBHOOK: ${{ secrets.LUADULE_WEBHOOK }}
+          FORCE_MODE: ${{ github.event_name == 'workflow_dispatch' && 'morning' || '' }}
         run: |
           cat > /tmp/notify.mjs << 'NOTIFY_EOF'
           'use strict';
-          // ルアジュール通知スクリプト(アプリ本体 index.html と同じ暗号形式・リマインドルール)
+          // ルアジュール通知スクリプト v2(アプリ本体 index.html と同じ暗号形式・リマインドルール)
+          // 送信時刻はアプリ設定 settings.notifyMorningHour / notifyEveningHour (JST, -1=送らない) に従う
           import { readFileSync } from 'fs';
 
           const GIST_ID = process.env.GIST_ID || '';
           const PASSPHRASE = process.env.PASSPHRASE || '';
           const WEBHOOK = process.env.WEBHOOK || '';
           const TEST_FILE = process.env.TEST_FILE || '';   // テスト用: 暗号化ペイロードJSONのパス
-          const FORCE_MODE = process.env.FORCE_MODE || ''; // テスト用: 'morning' | 'evening'
+          const FORCE_MODE = process.env.FORCE_MODE || ''; // 'morning' | 'evening'(手動実行/テスト用)
+          const TEST_NOW = process.env.TEST_NOW || '';     // テスト用: 現在時刻(epoch ms)の上書き
           const DRY_RUN = process.env.DRY_RUN === '1';     // テスト用: Discordに送らず表示のみ
 
           const GIST_FILENAME = 'oshical.enc.json';
           const PBKDF2_ITERATIONS = 310000;
+          const DEFAULT_MORNING_HOUR = 7;
+          const DEFAULT_EVENING_HOUR = 20;
           const SHIFT_DEFS = {
             '1': { label: '①', time: '7:00–15:00' },
             '2': { label: '②', time: '15:00–22:15' },
@@ -100,7 +107,10 @@ jobs:
           }
 
           // --- 日付ユーティリティ(JST基準・文字列ベース) ---
-          function jstNow() { return new Date(Date.now() + 9 * 3600 * 1000); }
+          function jstNow() {
+            const base = TEST_NOW ? Number(TEST_NOW) : Date.now();
+            return new Date(base + 9 * 3600 * 1000);
+          }
           function toDateStr(d) {
             return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
           }
@@ -113,6 +123,9 @@ jobs:
           function weekday(s) {
             const [y, m, d] = s.split('-').map(Number);
             return WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+          }
+          function settingHour(value, fallback) {
+            return (Number.isInteger(value) && value >= -1 && value <= 23) ? value : fallback;
           }
 
           // --- リマインド組み立て(純関数) ---
@@ -180,10 +193,21 @@ jobs:
           // --- main ---
           const now = jstNow();
           const today = toDateStr(now);
-          const mode = FORCE_MODE || (now.getUTCHours() < 12 ? 'morning' : 'evening');
+          const hour = now.getUTCHours(); // jstNowが+9時間済みのためこれがJSTの時
           try {
             const data = await decryptData(await fetchEncryptedPayload(), PASSPHRASE);
-            const name = (data.settings && data.settings.oshiName) || '推し';
+            const settings = data.settings || {};
+            const morningHour = settingHour(settings.notifyMorningHour, DEFAULT_MORNING_HOUR);
+            const eveningHour = settingHour(settings.notifyEveningHour, DEFAULT_EVENING_HOUR);
+            let mode = '';
+            if (FORCE_MODE) mode = FORCE_MODE;
+            else if (hour === morningHour) mode = 'morning';
+            else if (hour === eveningHour) mode = 'evening';
+            if (!mode) {
+              console.log(`現在${hour}時(JST)。通知設定(朝${morningHour}時/夜${eveningHour}時)と一致しないため送信なし`);
+              process.exit(0);
+            }
+            const name = settings.oshiName || '推し';
             if (mode === 'morning') {
               const lines = buildMorning(data, today);
               await postDiscord(`🌸 **${name}ジュール ${fmtMD(today)}(${weekday(today)}) 朝の通知**\n` + lines.join('\n'));
