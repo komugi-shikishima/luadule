@@ -407,6 +407,16 @@ function listLongTermEvents(events, today) {
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
 }
 
+// listMonthlyEvents: 「今月のイベント予定」枠に出すイベントカテゴリの予定を返す純関数。
+// category==='event' の予定のうち、指定した year/month と期間が重なるものを
+// startDate 昇順(同じなら endDate 昇順)で返す。longTermかどうかは問わない(longTermのイベントも対象に含む)。
+function listMonthlyEvents(events, year, month) {
+  return (events || [])
+    .filter((ev) => ev && ev.category === 'event' && isEventInMonth(ev, year, month))
+    .slice()
+    .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+}
+
 // eventDomId / findEventByDomId: 公開データのidが空文字の可能性があるため、
 // 空idのイベントは配列内インデックスをフォールバックのdata-idとして使う(open-event側で確実に同じイベントを引く)
 function eventDomId(ev, events) {
@@ -469,6 +479,7 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderReminderBanner()}
+    ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderLegend()}
@@ -516,6 +527,27 @@ function renderReminderBanner() {
   `;
 }
 
+// renderMonthlyEventSection: 「📌 販売期間中 一覧」のすぐ上に出す「今月のイベント予定」枠。
+// 表示中の月に重なる category==='event' の予定を表示する(longTermかどうかは問わない)。
+// 該当0件の月はセクションごと非表示。タップでその予定の個別詳細シートを開く
+// 公開ページでは合言葉の猫の顔文字は絶対に出さない(見出しは✨️で代用する)
+function renderMonthlyEventSection() {
+  const events = appState.payload.events;
+  const items = listMonthlyEvents(events, appState.year, appState.month);
+  if (!items.length) return '';
+  const today = parseDateStr(todayStr());
+  const isCurrentMonth = appState.year === today.y && appState.month === today.m;
+  const heading = isCurrentMonth ? '今月のイベント予定✨️' : `${appState.month}月のイベント予定✨️`;
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">${escapeHtml(heading)}</h2>
+      <div class="longterm-list">
+        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+      </div>
+    </section>
+  `;
+}
+
 // renderLongTermSection: カレンダー上部の長期予定一覧。全件表示(月による絞り込みなし)。
 // ただし終了した予定(endDate < today)は一覧から除外する(最終日当日は表示する)。
 // タップでその予定の個別詳細シートを開く
@@ -524,7 +556,7 @@ function renderLongTermSection() {
   if (!items.length) return '';
   return `
     <section class="longterm-section">
-      <h2 class="longterm-title">📌 長期予定一覧</h2>
+      <h2 class="longterm-title">📌 販売期間中 一覧</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev)).join('')}
       </div>

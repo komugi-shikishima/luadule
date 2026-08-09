@@ -282,6 +282,10 @@ const STORAGE_KEYS = {
 // 空文字にするとロックなしで起動する。データ保護そのものは同期の暗号化が担う
 const LOCK_HASH = '713d843e7ce6696676256ece9a8d22c26d1debbc9275309601732f9537452a48';
 
+// EVENT_SECTION_SUFFIX: 「今月のイベント予定」見出しに付ける猫の顔文字。
+// バッククォートを含むためテンプレートリテラル内には直接書けない → シングルクォート文字列の定数にして${...}で埋め込む
+const EVENT_SECTION_SUFFIX = 'ฅ( *`꒳´ * ฅ)';
+
 const CATEGORIES = {
   event:    { kind: 'oshi',     label: 'イベント',   colorVar: '--cat-event',    period: true },
   goods:    { kind: 'oshi',     label: 'グッズ販売', colorVar: '--cat-goods',    period: true },
@@ -570,6 +574,17 @@ function listLongTermEvents(targetState, today) {
   return events
     .filter((ev) => ev && !ev.deleted && ev.longTerm === true)
     .filter((ev) => !today || compareDates(ev.endDate, today) >= 0)
+    .slice()
+    .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+}
+
+// listMonthlyEvents: 「今月のイベント予定」枠に出すイベントカテゴリの予定を返す純関数。
+// 削除済みでない category==='event' の予定のうち、指定した year/month と期間が重なるものを
+// startDate 昇順(同じなら endDate 昇順)で返す。longTermかどうかは問わない(longTermのイベントも対象に含む)。
+function listMonthlyEvents(targetState, year, month) {
+  const events = (targetState && Array.isArray(targetState.events)) ? targetState.events : [];
+  return events
+    .filter((ev) => ev && !ev.deleted && ev.category === 'event' && isEventInMonth(ev, year, month))
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
 }
@@ -1402,6 +1417,7 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderReminderBanner()}
+    ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderSheetOverlay()}
@@ -1451,6 +1467,27 @@ function renderReminderBanner() {
   `;
 }
 
+// renderMonthlyEventSection: 「📌 販売期間中 一覧」のすぐ上に出す「今月のイベント予定」枠。
+// 表示中の月に重なる category==='event' の予定を表示する(longTermかどうかは問わない)。
+// 該当0件の月はセクションごと非表示。タップでその予定の個別詳細シートを開く
+function renderMonthlyEventSection() {
+  const items = listMonthlyEvents(state, uiState.year, uiState.month);
+  if (!items.length) return '';
+  const today = parseDateStr(todayStr());
+  const isCurrentMonth = uiState.year === today.y && uiState.month === today.m;
+  const heading = isCurrentMonth
+    ? `今月のイベント予定${EVENT_SECTION_SUFFIX}`
+    : `${uiState.month}月のイベント予定${EVENT_SECTION_SUFFIX}`;
+  return `
+    <section class="longterm-section">
+      <h2 class="longterm-title">${escapeHtml(heading)}</h2>
+      <div class="longterm-list">
+        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+      </div>
+    </section>
+  `;
+}
+
 // renderLongTermSection: カレンダー上部の長期予定一覧。全件表示(月による絞り込みなし)。
 // ただし終了した予定(endDate < today)は一覧から除外する(最終日当日は表示する)。
 // タップでその予定の個別詳細シートを開く
@@ -1459,7 +1496,7 @@ function renderLongTermSection() {
   if (!items.length) return '';
   return `
     <section class="longterm-section">
-      <h2 class="longterm-title">📌 長期予定一覧</h2>
+      <h2 class="longterm-title">📌 販売期間中 一覧</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev)).join('')}
       </div>
@@ -2490,6 +2527,7 @@ if (typeof window !== 'undefined') {
     fixDraftPublic,
     fixDraftLongTerm,
     listLongTermEvents,
+    listMonthlyEvents,
     isDraftDirty,
     buildPublicPayload,
     validateEventInput,
