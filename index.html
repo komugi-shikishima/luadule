@@ -631,7 +631,10 @@ function todayAgenda(targetState, today) {
 
 // buildShareLines: 「今日の予定」画像(Twitter添付用)に載せる行データを組み立てる純関数。
 // 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
-function buildShareLines(agenda, settings) {
+// 第3引数 reminders は computeReminders() の戻り値({ id, milestone, text }[])。
+// このうち milestone==='shift-tomorrow'(自分のシフト=勤務予定)は他人に見せる情報ではないため、
+// Twitter等に添付する画像には絶対に載せない。それ以外のリマインドは text だけを取り出し、最大6件まで含める
+function buildShareLines(agenda, settings, reminders) {
   const s = settings || {};
   const a = agenda || { dateStr: '', events: [], shift: null };
   const title = `${s.oshiName || '推し'}カレンダー`;
@@ -646,7 +649,12 @@ function buildShareLines(agenda, settings) {
     const color = effective.cat[ev.category] || effective.cat.other;
     return { title: ev.title, meta, color };
   });
-  return { title, dateLabel, shiftLine, items };
+  const remindersSource = Array.isArray(reminders) ? reminders : [];
+  const publicReminders = remindersSource
+    .filter((r) => r && r.milestone !== 'shift-tomorrow')
+    .map((r) => r.text)
+    .slice(0, 6);
+  return { title, dateLabel, shiftLine, items, reminders: publicReminders };
 }
 
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
@@ -2318,6 +2326,15 @@ function drawRoundedRect(ctx, x, y, w, h, radius) {
   ctx.closePath();
 }
 
+// stripLeadingReminderEmoji: リマインドテキスト先頭の絵文字(⚠🔔🎪📺🎉)を除去する補助関数。
+// Canvasでの絵文字描画は環境によって豆腐(□)になり得るため、画像に描く直前にだけ除去して使う
+// (バナー表示など他の用途では絵文字付きのテキストをそのまま使い続ける)。
+// 除去後に空文字列になった場合は呼び出し側で描画をスキップすること
+function stripLeadingReminderEmoji(text) {
+  const str = text === null || text === undefined ? '' : String(text);
+  return str.replace(/^[⚠🔔🎪📺🎉]️?\s*/, '').trim();
+}
+
 // truncateToWidth: ctx.measureTextで幅を測り、収まらない文字列を「…」付きで切り詰める補助関数
 function truncateToWidth(ctx, text, maxWidth) {
   const str = text === null || text === undefined ? '' : String(text);
@@ -2343,7 +2360,17 @@ function truncateToWidth(ctx, text, maxWidth) {
 async function handleShareTodayImage() {
   try {
     const agenda = todayAgenda(state, todayStr());
-    const lines = buildShareLines(agenda, state.settings);
+    const lines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()));
+
+    // お知らせ(リマインド)行はここで絵文字を除去して確定させる。
+    // 除去後に空文字になった行は描画も高さ計算も対象外にする(先頭絵文字だけの行は現状の文言では発生しないが念のため)
+    const noticeRows = lines.reminders
+      .map((text) => stripLeadingReminderEmoji(text))
+      .filter((text) => text.length > 0);
+    const NOTICE_HEADING_HEIGHT = 22;
+    const NOTICE_ROW_HEIGHT = 34;
+    const NOTICE_ROW_GAP = 6;
+    const NOTICE_SECTION_BOTTOM_GAP = 10;
 
     const width = 900;
     const margin = 40;
@@ -2354,6 +2381,11 @@ async function handleShareTodayImage() {
     let height = margin + 24 + 34 + 26;
     if (lines.shiftLine) height += 30;
     height += 10;
+    if (noticeRows.length) {
+      height += NOTICE_HEADING_HEIGHT;
+      height += noticeRows.length * (NOTICE_ROW_HEIGHT + NOTICE_ROW_GAP);
+      height += NOTICE_SECTION_BOTTOM_GAP;
+    }
     height += lines.items.length ? lines.items.length * 58 : 40;
     height += 30 + margin;
     height = Math.max(height, 600);
@@ -2406,6 +2438,31 @@ async function handleShareTodayImage() {
       y += 30;
     }
     y += 10;
+
+    // --- お知らせ(リマインド)セクション: シフト行の下・予定リストの上。
+    // shift-tomorrow(自分のシフト)はbuildShareLinesの時点で既に除外済みなのでここには出てこない ---
+    if (noticeRows.length) {
+      ctx.fillStyle = '#777777';
+      ctx.font = '700 14px sans-serif';
+      ctx.fillText('お知らせ', innerX, y);
+      y += NOTICE_HEADING_HEIGHT;
+
+      const noticeAccent = adjustLightness(primary, -15);
+      const noticeBg = mixWithWhite(primary, 0.85);
+      noticeRows.forEach((text) => {
+        drawRoundedRect(ctx, innerX, y - 22, innerWidth, NOTICE_ROW_HEIGHT, 8);
+        ctx.fillStyle = noticeBg;
+        ctx.fill();
+        ctx.fillStyle = noticeAccent;
+        drawRoundedRect(ctx, innerX + 8, y - 17, 4, 22, 2);
+        ctx.fill();
+        ctx.fillStyle = '#444444';
+        ctx.font = '600 14px sans-serif';
+        ctx.fillText(truncateToWidth(ctx, text, innerWidth - 40), innerX + 22, y);
+        y += NOTICE_ROW_HEIGHT + NOTICE_ROW_GAP;
+      });
+      y += NOTICE_SECTION_BOTTOM_GAP;
+    }
 
     // --- 予定リスト(公開用メモ・自分用メモは描画しない) ---
     if (!lines.items.length) {
