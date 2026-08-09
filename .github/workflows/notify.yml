@@ -1,0 +1,225 @@
+# =============================================================
+# ルアジュール Discord通知ワークフロー
+# リポジトリに「.github/workflows/notify.yml」という名前で保存すると、
+# 毎朝7時と夜20時(日本時間)に予定のリマインドをDiscordへ送ります。
+#
+# 必要なSecrets(リポジトリのSettings → Secrets and variables → Actions):
+#   LUADULE_GIST_ID    … データ置き場(oshical-sync-v1)のGist ID
+#   LUADULE_PASSPHRASE … アプリで決めた合言葉
+#   LUADULE_WEBHOOK    … DiscordのWebhook URL
+#
+# ※時刻を変えたいときは下の cron を編集(UTC表記。日本時間-9時間)
+#   例: 朝6時なら '0 21 * * *'、夜21時なら '0 12 * * *'
+# ※GitHubの仕様で、実際の実行は指定時刻から数分〜1時間ほど遅れることがあります
+# =============================================================
+name: Luadule Discord Notify
+
+on:
+  schedule:
+    - cron: '0 22 * * *' # 朝 7:00 JST
+    - cron: '0 11 * * *' # 夜 20:00 JST
+  workflow_dispatch: # Actionsタブから手動実行(動作テスト用)
+
+permissions:
+  contents: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Send Discord notification
+        env:
+          GIST_ID: ${{ secrets.LUADULE_GIST_ID }}
+          PASSPHRASE: ${{ secrets.LUADULE_PASSPHRASE }}
+          WEBHOOK: ${{ secrets.LUADULE_WEBHOOK }}
+        run: |
+          cat > /tmp/notify.mjs << 'NOTIFY_EOF'
+          'use strict';
+          // ルアジュール通知スクリプト(アプリ本体 index.html と同じ暗号形式・リマインドルール)
+          import { readFileSync } from 'fs';
+
+          const GIST_ID = process.env.GIST_ID || '';
+          const PASSPHRASE = process.env.PASSPHRASE || '';
+          const WEBHOOK = process.env.WEBHOOK || '';
+          const TEST_FILE = process.env.TEST_FILE || '';   // テスト用: 暗号化ペイロードJSONのパス
+          const FORCE_MODE = process.env.FORCE_MODE || ''; // テスト用: 'morning' | 'evening'
+          const DRY_RUN = process.env.DRY_RUN === '1';     // テスト用: Discordに送らず表示のみ
+
+          const GIST_FILENAME = 'oshical.enc.json';
+          const PBKDF2_ITERATIONS = 310000;
+          const SHIFT_DEFS = {
+            '1': { label: '①', time: '7:00–15:00' },
+            '2': { label: '②', time: '15:00–22:15' },
+            '3': { label: '③', time: '22:15–翌7:00' },
+            off: { label: '休み', time: '' },
+            hw: { label: '休出', time: '' },
+          };
+          const CAT_LABELS = {
+            event: 'イベント', goods: 'グッズ販売', stream: '配信', members: '限定配信',
+            call: 'FB通話', other: 'その他', personal: '自分の予定',
+          };
+          const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+
+          function b64ToBytes(b64) { return new Uint8Array(Buffer.from(b64, 'base64')); }
+
+          async function decryptData(payload, passphrase) {
+            if (!payload || payload.v !== 1 || !payload.salt || !payload.iv || !payload.data) {
+              throw new Error('データ形式が不正です');
+            }
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+            const key = await crypto.subtle.deriveKey(
+              { name: 'PBKDF2', salt: b64ToBytes(payload.salt), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+              keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
+            );
+            try {
+              const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBytes(payload.iv) }, key, b64ToBytes(payload.data));
+              return JSON.parse(new TextDecoder().decode(plain));
+            } catch (e) {
+              throw new Error('合言葉が違うか、データが壊れています');
+            }
+          }
+
+          async function fetchEncryptedPayload() {
+            if (TEST_FILE) return JSON.parse(readFileSync(TEST_FILE, 'utf8'));
+            if (!GIST_ID) throw new Error('LUADULE_GIST_ID が設定されていません');
+            const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(GIST_ID)}`, {
+              headers: { Accept: 'application/vnd.github+json' },
+            });
+            if (!res.ok) throw new Error(`データ置き場の取得に失敗しました(${res.status})`);
+            const gist = await res.json();
+            const file = gist.files && gist.files[GIST_FILENAME];
+            if (!file || typeof file.content !== 'string') throw new Error(`データ置き場に ${GIST_FILENAME} が見つかりません`);
+            return JSON.parse(file.content);
+          }
+
+          // --- 日付ユーティリティ(JST基準・文字列ベース) ---
+          function jstNow() { return new Date(Date.now() + 9 * 3600 * 1000); }
+          function toDateStr(d) {
+            return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+          }
+          function addDaysStr(s, n) {
+            const [y, m, d] = s.split('-').map(Number);
+            return toDateStr(new Date(Date.UTC(y, m - 1, d + n)));
+          }
+          function inRange(x, a, b) { return x >= a && x <= b; }
+          function fmtMD(s) { const p = s.split('-').map(Number); return `${p[1]}/${p[2]}`; }
+          function weekday(s) {
+            const [y, m, d] = s.split('-').map(Number);
+            return WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+          }
+
+          // --- リマインド組み立て(純関数) ---
+          function activeEvents(events) {
+            return (events || []).filter((e) => e && !e.deleted && e.title && e.startDate && e.endDate);
+          }
+          function shiftLine(shifts, dateStr, prefix) {
+            const s = (shifts || {})[dateStr];
+            if (!s || s.deleted || !SHIFT_DEFS[s.code]) return null;
+            const def = SHIFT_DEFS[s.code];
+            return `💼 ${prefix}のシフト: ${def.label}${def.time ? `(${def.time})` : ''}`;
+          }
+          function eventLines(events, dateStr) {
+            return activeEvents(events)
+              .filter((e) => inRange(dateStr, e.startDate, e.endDate))
+              .map((e) => {
+                const cat = CAT_LABELS[e.category] || 'その他';
+                const multi = e.startDate !== e.endDate;
+                const extra = multi ? `(${fmtMD(e.startDate)}〜${fmtMD(e.endDate)})` : (e.time ? ` ${e.time}〜` : '');
+                return `・[${cat}] ${e.title}${extra}`;
+              });
+          }
+          function buildMorning(data, today) {
+            const lines = [];
+            const tomorrow = addDaysStr(today, 1);
+            const shift = shiftLine(data.shifts, today, '今日');
+            if (shift) lines.push(shift);
+            const evs = eventLines(data.events, today);
+            if (evs.length) { lines.push('📅 今日の予定'); lines.push(...evs); }
+            activeEvents(data.events).forEach((e) => {
+              const multi = e.startDate !== e.endDate;
+              if (multi && e.startDate === today) lines.push(`🎪 『${e.title}』今日から!`);
+              if (multi && e.endDate === today) lines.push(`🔔 『${e.title}』は今日が最終日!`);
+              if (multi && e.endDate === tomorrow) lines.push(`⚠ 『${e.title}』は明日が最終日!`);
+            });
+            if (!lines.length) lines.push('今日の予定はありません🌸');
+            return lines;
+          }
+          function buildEvening(data, today) {
+            const lines = [];
+            const tomorrow = addDaysStr(today, 1);
+            activeEvents(data.events).forEach((e) => {
+              if (e.startDate !== e.endDate && e.endDate === tomorrow) {
+                lines.push(`⚠ 『${e.title}』は明日が最終日! 買い逃し・見逃し注意!`);
+              }
+            });
+            const shift = shiftLine(data.shifts, tomorrow, '明日');
+            if (shift) lines.push(shift);
+            const evs = eventLines(data.events, tomorrow);
+            if (evs.length) { lines.push('📅 明日の予定'); lines.push(...evs); }
+            return lines; // 空なら送信スキップ
+          }
+
+          async function postDiscord(content) {
+            if (DRY_RUN) { console.log('--- DRY RUN(送信内容) ---\n' + content); return; }
+            if (!WEBHOOK) throw new Error('LUADULE_WEBHOOK が設定されていません');
+            const res = await fetch(WEBHOOK, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content }),
+            });
+            if (!res.ok) throw new Error(`Discordへの送信に失敗しました(${res.status})`);
+          }
+
+          // --- main ---
+          const now = jstNow();
+          const today = toDateStr(now);
+          const mode = FORCE_MODE || (now.getUTCHours() < 12 ? 'morning' : 'evening');
+          try {
+            const data = await decryptData(await fetchEncryptedPayload(), PASSPHRASE);
+            const name = (data.settings && data.settings.oshiName) || '推し';
+            if (mode === 'morning') {
+              const lines = buildMorning(data, today);
+              await postDiscord(`🌸 **${name}ジュール ${fmtMD(today)}(${weekday(today)}) 朝の通知**\n` + lines.join('\n'));
+              console.log('朝の通知を送信しました');
+            } else {
+              const lines = buildEvening(data, today);
+              if (lines.length) {
+                await postDiscord(`🌙 **${name}ジュール 夜の通知**\n` + lines.join('\n'));
+                console.log('夜の通知を送信しました');
+              } else {
+                console.log('夜の通知対象がないため送信をスキップしました');
+              }
+            }
+          } catch (e) {
+            console.error('通知処理でエラー:', e.message);
+            try { await postDiscord(`⚠ ルアジュール通知でエラーが発生しました: ${e.message}`); } catch (e2) { console.error(e2.message); }
+            process.exit(1);
+          }
+          NOTIFY_EOF
+          node /tmp/notify.mjs
+
+      # 公開リポジトリは60日間更新がないと定期実行が自動停止されるため、
+      # 50日以上コミットが無ければ小さな更新を自動で入れて稼働を維持する
+      - name: Keep repository active
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          days=$(( (now - last) / 86400 ))
+          if [ "$days" -ge 50 ]; then
+            git config user.name "luadule-bot"
+            git config user.email "actions@users.noreply.github.com"
+            date > .keepalive
+            git add .keepalive
+            git commit -m "chore: keep scheduled workflow active"
+            git push
+            echo "keepaliveコミットを実行しました"
+          else
+            echo "最終コミットから${days}日のためkeepalive不要"
+          fi
