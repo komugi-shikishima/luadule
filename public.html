@@ -60,11 +60,10 @@ h1,h2,h3{ margin:0; }
   background:var(--secondary-light); color:var(--text); box-shadow:var(--shadow-sm);
 }
 
-.reminder-banner{ margin:8px 16px 0; display:flex; flex-direction:column; gap:6px; }
-.reminder-item{
-  background:#fff; border-left:4px solid var(--primary-dark); padding:10px 12px;
-  border-radius:var(--radius-sm); box-shadow:var(--shadow-sm); font-size:0.92rem;
-  overflow-wrap:anywhere;
+.today-reminder-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
+.today-reminder{
+  background:var(--primary-light); border-left:4px solid var(--primary-dark); padding:8px 10px;
+  border-radius:var(--radius-sm); font-size:0.88rem; overflow-wrap:anywhere;
 }
 
 .calendar{ margin:16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:12px; }
@@ -161,10 +160,16 @@ h1,h2,h3{ margin:0; }
 
 /* ---------- 1. CONSTANTS ---------- */
 const PUBLIC_GIST_FILENAME = 'oshical-public.json';
-const ALLOWED_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other', 'anniversary'];
-const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', other: 'その他', anniversary: '記念日' };
-const CATEGORY_PERIOD = { event: true, goods: true, ticket: true, stream: false, other: true, anniversary: false };
-const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', ticket: '#9ccc65', stream: '#a5d8e6', other: '#b8b8b8', anniversary: '#e8b04f' };
+// members(限定配信)はv31で公開可カテゴリに追加。ただしユーザーが個別に「公開カレンダーに載せる」
+// チェックを入れた予定だけがoshical-public.jsonのeventsに乗る(本体index.htmlのbuildPublicPayload参照)。
+// callは絶対にここへ追加しないこと
+const ALLOWED_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'other', 'anniversary'];
+const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信', other: 'その他', anniversary: '記念日' };
+const CATEGORY_PERIOD = { event: true, goods: true, ticket: true, stream: false, members: false, other: true, anniversary: false };
+const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', ticket: '#9ccc65', stream: '#a5d8e6', members: '#7cc3d8', other: '#b8b8b8', anniversary: '#e8b04f' };
+// MILESTONE_PRIORITY: リマインドの並び順(index.htmlのcomputeRemindersと同じ優先度定義。
+// 公開ページにはシフトが無いため shift-tomorrow は含まない)
+const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3 };
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -514,13 +519,21 @@ function findEventByDomId(events, domId) {
   return (events || []).find((ev) => ev && ev.id === domId) || null;
 }
 
-// computeSimpleReminders: computeReminders相当の簡易版。期間ものの最終日前日/当日+記念日(§12.7)
+// computeSimpleReminders: computeReminders相当の簡易版(§12.7、v31で本体に近い内容へ拡張)。
+// 公開データ(oshical-public.jsonのevents。既に公開チェック済みのものしか入っていない)にある
+// 情報だけで以下のマイルストーンを判定する:
+//   lastday-eve: 期間ものの endDate===明日 → ⚠明日が最終日(既存)
+//   lastday    : 期間ものの endDate===今日 → 🔔今日が最終日(既存)
+//   firstday   : 期間ものの startDate===今日 → 🎪今日から!(新規)
+//   today-time : 単日+時刻ありの startDate===今日 → 📺今日◯時〜(新規)
+//   anniversary: occursOnDayが今日に一致する記念日 → 🎉今日は◯◯!(新規)
+// MILESTONE_PRIORITY の順(lastday-eve→lastday→firstday→anniversary→today-time)でソートして返す
 function computeSimpleReminders(events, today) {
   const tomorrow = addDays(today, 1);
   const reminders = [];
   (events || []).forEach((ev) => {
     if (!ev || !ev.title || !ev.startDate || !ev.endDate) return;
-    // anniversary(記念日): 単日予定のため期間系リマインド(最終日前日/当日)は対象外。
+    // anniversary(記念日): 単日予定のため期間系リマインド(最終日前日/当日/初日)は対象外。
     // occursOnDay で毎年の同月日判定を行い、一致した日にだけ🎉リマインドを出す
     if (ev.category === 'anniversary') {
       if (occursOnDay(ev, today)) reminders.push({ milestone: 'anniversary', text: `🎉 今日は『${ev.title}』!` });
@@ -528,11 +541,21 @@ function computeSimpleReminders(events, today) {
     }
     const isPeriod = !!CATEGORY_PERIOD[ev.category];
     const isMultiDay = ev.startDate !== ev.endDate;
-    if (!isPeriod || !isMultiDay) return;
-    if (ev.endDate === tomorrow) reminders.push({ milestone: 'lastday-eve', text: `⚠ 『${ev.title}』は明日が最終日!` });
-    if (ev.endDate === today) reminders.push({ milestone: 'lastday', text: `🔔 『${ev.title}』は今日が最終日!` });
+    if (isPeriod && isMultiDay && ev.endDate === tomorrow) {
+      reminders.push({ milestone: 'lastday-eve', text: `⚠ 『${ev.title}』は明日が最終日!` });
+    }
+    if (isPeriod && isMultiDay && ev.endDate === today) {
+      reminders.push({ milestone: 'lastday', text: `🔔 『${ev.title}』は今日が最終日!` });
+    }
+    if (isPeriod && isMultiDay && ev.startDate === today) {
+      reminders.push({ milestone: 'firstday', text: `🎪 『${ev.title}』今日から!` });
+    }
+    if (!isPeriod && ev.startDate === today && ev.time) {
+      const range = ` ${ev.time}〜${ev.endTime || ''}`;
+      reminders.push({ milestone: 'today-time', text: `📺 『${ev.title}』今日${range}` });
+    }
   });
-  return reminders;
+  return reminders.sort((a, b) => MILESTONE_PRIORITY[a.milestone] - MILESTONE_PRIORITY[b.milestone]);
 }
 
 /* ---------- 6. state(画面の一時状態のみ。永続化しない) ---------- */
@@ -565,7 +588,6 @@ function renderApp() {
   return `
     ${renderHeader()}
     ${renderTodaySection()}
-    ${renderReminderBanner()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
     ${renderCalendar()}
@@ -603,28 +625,26 @@ function renderHeader() {
   `;
 }
 
-function renderReminderBanner() {
-  const events = appState.payload.events;
-  const reminders = computeSimpleReminders(events, todayStr());
-  if (!reminders.length) return '';
-  return `
-    <div class="reminder-banner">
-      ${reminders.map((r) => `<div class="reminder-item">${escapeHtml(r.text)}</div>`).join('')}
-    </div>
-  `;
-}
-
-// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24)。
+// renderTodaySection: ヘッダー直下に出す「今日の予定」専用カード(v24。v31でお知らせ(リマインド)を
+// カード内に統合し、カード外の独立バナー(旧renderReminderBanner)は廃止した)。
 // 公開データにシフトは無いため予定一覧のみを表示する。今日固定(表示中の月に依存しない)。
-// 予定が0件でもカード自体は常に表示する。合言葉の猫の顔文字はこのページには一切出さない
+// リマインドは見出しの下・予定リストの上に表示し、0件なら何も出さない。
+// 予定が0件でもリマインドがあれば「今日の予定はありません」は出さずリマインドのみ表示する。
+// カード自体は予定・リマインドとも0件でも常に表示する。合言葉の猫の顔文字はこのページには一切出さない
 function renderTodaySection() {
-  const agenda = todayAgenda(appState.payload.events, todayStr());
+  const today = todayStr();
+  const agenda = todayAgenda(appState.payload.events, today);
+  const reminders = computeSimpleReminders(appState.payload.events, today);
+  const reminderHtml = reminders.length
+    ? `<div class="today-reminder-list">${reminders.map((r) => `<div class="today-reminder">${escapeHtml(r.text)}</div>`).join('')}</div>`
+    : '';
   const body = agenda.events.length
     ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
-    : `<p class="empty-hint">今日の予定はありません</p>`;
+    : (reminders.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
   return `
     <section class="longterm-section">
       <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
+      ${reminderHtml}
       ${body}
     </section>
   `;

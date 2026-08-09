@@ -333,8 +333,12 @@ const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3, 'shift-tomorrow': 4 };
 const GIST_DESCRIPTION = 'oshical-sync-v1';
 const GIST_FILENAME = 'oshical.enc.json';
-// 公開カレンダー(§12): 公開できるのは推しカテゴリのうちメンバー限定でない5種+記念日
-const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other', 'anniversary'];
+// 公開カレンダー(§12): 公開できるのは推しカテゴリ(FB通話callを除く)+記念日。
+// 限定配信(members)はv31でPUBLIC_CATEGORIESに追加したが、実際に公開されるのは従来通り
+// ユーザーが予定ごとに「公開カレンダーに載せる」チェックを入れたもの(ev.public===true)のみ
+// (buildPublicPayload/fixDraftPublicのkind==='oshi'+public===true判定は変更していない)。
+// callは絶対にここへ追加しないこと
+const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'other', 'anniversary'];
 const GIST_PUBLIC_DESCRIPTION = 'oshical-public-v1';
 const GIST_PUBLIC_FILENAME = 'oshical-public.json';
 const GITHUB_API = 'https://api.github.com';
@@ -492,6 +496,7 @@ function getDefaultState() {
       shiftColors: {},    // シフトごとの色の上書き。空文字/未設定=標準色
       memoColor: '',      // 自分用メモの文字色。空文字=テーマから自動導出
       todayColor: '',     // 今日の枠の色。空文字=テーマから自動導出
+      membersPublicMigrated: false, // v31: 限定配信(members)公開解禁の安全マイグレーション実施済みフラグ
       updatedAt: 0,
     },
     events: [],
@@ -513,15 +518,32 @@ function normalizeEvent(ev) {
 }
 
 // 将来のバージョンアップ時はここに version ごとの変換を追加していく
+// v31安全マイグレーション: 限定配信(members)をPUBLIC_CATEGORIESに追加した際、過去に
+// (通常は起こり得ないはずだが)不正に public:true のまま保存されていたmembersイベントが
+// 突然公開されてしまわないよう、settings.membersPublicMigrated!==trueのときだけ一度だけ
+// membersカテゴリの public を強制的に false へ落とす。ユーザーが自分でチェックを入れ直した
+// 後(=既にmembersPublicMigrated:trueになった後)のデータは触らない。updatedAtは一切変更しない
 function migrateData(raw) {
   if (!raw || typeof raw !== 'object') return getDefaultState();
   const base = getDefaultState();
-  return {
-    version: 1,
-    settings: { ...base.settings, ...(raw.settings || {}) },
-    events: Array.isArray(raw.events) ? raw.events.map(normalizeEvent) : [],
-    shifts: raw.shifts && typeof raw.shifts === 'object' ? raw.shifts : {},
-  };
+  const settings = { ...base.settings, ...(raw.settings || {}) };
+  const events = Array.isArray(raw.events) ? raw.events.map(normalizeEvent) : [];
+  const shifts = raw.shifts && typeof raw.shifts === 'object' ? raw.shifts : {};
+  if (settings.membersPublicMigrated !== true) {
+    const migratedEvents = events.map((ev) => {
+      if (ev && ev.category === 'members' && ev.public === true) {
+        return { ...ev, public: false };
+      }
+      return ev;
+    });
+    return {
+      version: 1,
+      settings: { ...settings, membersPublicMigrated: true },
+      events: migratedEvents,
+      shifts,
+    };
+  }
+  return { version: 1, settings, events, shifts };
 }
 
 // purgeOldTombstones: 論理削除から90日を過ぎたデータを物理削除する純関数
@@ -630,10 +652,13 @@ function todayAgenda(targetState, today) {
 }
 
 // buildShareLines: 「今日の予定」画像(Twitter添付用)に載せる行データを組み立てる純関数。
-// 画像は「公開して差し支えない情報」のみで構成する(v29→v30で仕様変更):
+// 画像は「公開して差し支えない情報」のみで構成する(v29→v30で仕様変更、v31で限定配信の扱いを追加変更):
 //  - 自分のシフト(勤務予定)は一切含めない(戻り値に shiftLine キー自体を持たない)
-//  - 自分の予定(kind==='personal')・非公開カテゴリ(限定配信members・FB通話call)は items から除外する。
-//    ev.public フラグ(公開カレンダー掲載チェック)は条件にしない(カテゴリ的に見せて良いかどうかのみで絞る)
+//  - 自分の予定(kind==='personal')・FB通話(call)は items から除外する。
+//    非members・非call・非personalのカテゴリは ev.public フラグ(公開カレンダー掲載チェック)を
+//    条件にしない(カテゴリ的に見せて良いかどうかのみで絞る)。
+//  - 限定配信(members)のみ、ev.public===trueのとき(=ユーザーが公開チェックを入れた予定)だけ
+//    itemsに含める。公開チェックしていないメン限は画像にも一切出さない(v31)
 //  - 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
 // 第3引数 reminders は computeReminders() の戻り値({ id, eventId, milestone, text }[])。
 // 第4引数 allEvents(state.events)は、リマインドの元イベントが上記の「公開して良い予定」の条件を
@@ -646,7 +671,11 @@ function buildShareLines(agenda, settings, reminders, allEvents) {
   const title = `${s.oshiName || '推し'}カレンダー`;
   const dateLabel = a.dateStr ? formatDateLabel(a.dateStr) : '';
   const effective = computeEffectiveColors(s);
-  const isSharableEvent = (ev) => !!ev && ev.kind === 'oshi' && PUBLIC_CATEGORIES.indexOf(ev.category) !== -1;
+  const isSharableEvent = (ev) => {
+    if (!ev || ev.kind !== 'oshi' || PUBLIC_CATEGORIES.indexOf(ev.category) === -1) return false;
+    if (ev.category === 'members' && ev.public !== true) return false;
+    return true;
+  };
   const items = (a.events || [])
     .filter(isSharableEvent)
     .map((ev) => {
@@ -693,7 +722,9 @@ function fixDraftEndDate(draft) {
   return draft;
 }
 
-// fixDraftPublic: 公開不可(自分の予定 / members・call カテゴリ)へ変更したら public を自動でfalseに戻す純関数
+// fixDraftPublic: 公開不可(自分の予定 / call カテゴリなどPUBLIC_CATEGORIES外)へ変更したら
+// public を自動でfalseに戻す純関数。v31以降、members(限定配信)はkind==='oshi'であれば
+// PUBLIC_CATEGORIESに含まれるためここでは矯正されない(ユーザーが個別に公開チェックを入れる)
 function fixDraftPublic(draft) {
   if (!draft) return draft;
   const canPublish = draft.kind === 'oshi' && PUBLIC_CATEGORIES.indexOf(draft.category) !== -1;
@@ -1982,6 +2013,7 @@ function renderPublicCheckboxField(ev) {
         <textarea id="ev-public-memo" data-field="publicMemo" rows="2" maxlength="500" placeholder="例: 通販はこちら https://...">${escapeHtml(ev.publicMemo || '')}</textarea>
       </div>` : ''}
       <p class="settings-hint">※公開されるのはタイトル・期間・時刻・公開用メモのみ。上の「メモ」は自分専用で公開されません</p>
+      ${ev.category === 'members' ? '<p class="settings-hint">※限定配信は、公開しても内容が漏れないタイトルにしてください</p>' : ''}
     </div>
   `;
 }
