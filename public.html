@@ -15,7 +15,9 @@
   --primary-light:#fcdce6;
   --secondary-dark:#7cc3d8;
   --secondary-light:#cdeaf3;
-  --bg:#fffaf9;
+  --bg:#fef6f8;
+  --bg-top:#fcdee6;
+  --bg-bottom:#d6edf4;
   --text:#3a2e2e;
   --text-muted:#8a7a7a;
   --border:#f0e0e2;
@@ -31,7 +33,7 @@ html,body{margin:0;padding:0;}
 body{
   font-family:var(--font);
   color:var(--text);
-  background:linear-gradient(180deg, var(--primary-light) 0%, var(--bg) 320px);
+  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
   min-height:100vh;
   -webkit-tap-highlight-color:transparent;
 }
@@ -243,6 +245,41 @@ function safeColor(value, fallback) {
   return typeof value === 'string' && COLOR_RE.test(value) ? value : fallback;
 }
 
+// mixWithWhite: 色を白と混ぜて淡くする(t=0で元色、t=1で白)。背景グラデーション用
+function mixWithWhite(hex, t) {
+  const clean = String(hex).replace('#', '');
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  const n = parseInt(full, 16);
+  const mix = (v) => Math.round(v + (255 - v) * t);
+  const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+  return `#${toHex(mix((n >> 16) & 255))}${toHex(mix((n >> 8) & 255))}${toHex(mix(n & 255))}`;
+}
+
+// applyPublicTheme: 公開データの色(goods=メイン系, stream=サブ系)から背景グラデーションを設定
+function applyPublicTheme(colors) {
+  const root = document.documentElement.style;
+  const top = safeColor(colors && colors.goods, '#f8b6c8');
+  const bottom = safeColor(colors && colors.stream, '#a5d8e6');
+  root.setProperty('--bg-top', mixWithWhite(top, 0.55));
+  root.setProperty('--bg-bottom', mixWithWhite(bottom, 0.55));
+  root.setProperty('--bg', mixWithWhite(top, 0.88));
+}
+
+// formatEventSchedule: 予定の日時表記を統一する純関数(index.htmlと同一仕様)
+// 期間もの: 「6月20日(土)19:00〜8月9日(日) 23:59まで」 / 単日: 「21:00〜22:30」
+function formatEventSchedule(ev) {
+  if (!ev) return '';
+  const multi = ev.startDate !== ev.endDate;
+  if (multi) {
+    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ev.time : ''}`;
+    const end = `${formatDateLabel(ev.endDate)}${ev.endTime ? ` ${ev.endTime}まで` : ''}`;
+    return `${start}〜${end}`;
+  }
+  if (!ev.time && !ev.endTime) return '';
+  if (!ev.time) return `${ev.endTime}まで`;
+  return `${ev.time}〜${ev.endTime || ''}`;
+}
+
 // linkifyText: エスケープ済みテキスト中の https?:// のURLだけを安全な<a>に変換する
 // 必ず先にescapeHtmlを通すこと。javascript:等は正規表現で最初から除外される
 function linkifyText(str) {
@@ -299,9 +336,10 @@ function sanitizeEvent(ev) {
   if (typeof ev.startDate !== 'string' || !DATE_RE.test(ev.startDate)) return null;
   if (typeof ev.endDate !== 'string' || !DATE_RE.test(ev.endDate)) return null;
   const time = typeof ev.time === 'string' && TIME_RE.test(ev.time) ? ev.time : '';
+  const endTime = typeof ev.endTime === 'string' && TIME_RE.test(ev.endTime) ? ev.endTime : '';
   const id = typeof ev.id === 'string' ? ev.id : '';
   const memo = typeof ev.memo === 'string' ? ev.memo.slice(0, 500) : '';
-  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time, memo };
+  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time, endTime, memo };
 }
 
 // sanitizePayload: 公開Gist由来データ全体を検証・無害化する純関数
@@ -497,12 +535,11 @@ function renderDaySheetOverlay() {
 
 function renderDayEventItem(ev) {
   const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category]);
-  const period = ev.startDate !== ev.endDate ? `${formatDateLabel(ev.startDate)}〜${formatDateLabel(ev.endDate)}` : '';
   const catLabel = CATEGORY_LABELS[ev.category] || ev.category;
   return `
     <div class="event-item" style="border-left-color:${color}">
       <div class="event-item-title">${escapeHtml(ev.title)}</div>
-      <div class="event-item-meta">${escapeHtml(catLabel)}${period ? ' ・ ' + escapeHtml(period) : ''}${ev.time ? ' ・ ' + escapeHtml(ev.time) : ''}</div>
+      <div class="event-item-meta">${escapeHtml(catLabel)}${formatEventSchedule(ev) ? ' ・ ' + escapeHtml(formatEventSchedule(ev)) : ''}</div>
       ${ev.memo ? `<div class="event-item-memo">${linkifyText(ev.memo)}</div>` : ''}
     </div>
   `;
@@ -574,6 +611,7 @@ async function init() {
   try {
     const raw = await loadPublicData(gistId);
     const payload = sanitizePayload(raw);
+    applyPublicTheme(payload.colors);
     setAppState({ status: 'ready', payload });
   } catch (e) {
     console.error('公開カレンダーの取得に失敗しました', e);

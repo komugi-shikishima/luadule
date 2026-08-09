@@ -33,7 +33,9 @@
   --shift-3:#c9a8e0;
   --shift-off:#8fbf9f;
   --shift-hw:#f0a860;
-  --bg:#fffaf9;
+  --bg:#fef6f8;
+  --bg-top:#fcdee6;
+  --bg-bottom:#d6edf4;
   --text:#3a2e2e;
   --text-muted:#8a7a7a;
   --border:#f0e0e2;
@@ -49,7 +51,8 @@ html,body{margin:0;padding:0;}
 body{
   font-family:var(--font);
   color:var(--text);
-  background:linear-gradient(180deg, var(--primary-light) 0%, var(--bg) 320px);
+  min-height:100vh;
+  background:linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
   min-height:100vh;
   -webkit-tap-highlight-color:transparent;
 }
@@ -380,6 +383,21 @@ function formatDateLabel(dateStr) {
   const d = dateStrToDate(dateStr);
   const { m, d: day } = parseDateStr(dateStr);
   return `${m}月${day}日(${WEEKDAY_LABELS[d.getDay()]})`;
+}
+
+// formatEventSchedule: 予定の日時表記を統一する純関数
+// 期間もの: 「6月20日(土)19:00〜8月9日(日) 23:59まで」 / 単日: 「21:00〜22:30」
+function formatEventSchedule(ev) {
+  if (!ev) return '';
+  const multi = ev.startDate !== ev.endDate;
+  if (multi) {
+    const start = `${formatDateLabel(ev.startDate)}${ev.time ? ev.time : ''}`;
+    const end = `${formatDateLabel(ev.endDate)}${ev.endTime ? ` ${ev.endTime}まで` : ''}`;
+    return `${start}〜${end}`;
+  }
+  if (!ev.time && !ev.endTime) return '';
+  if (!ev.time) return `${ev.endTime}まで`;
+  return `${ev.time}〜${ev.endTime || ''}`;
 }
 
 /* =========================================================
@@ -870,14 +888,20 @@ let syncInProgress = false;
 function setSyncIndicator(status, message) {
   syncIndicator = status;
   syncIndicatorMessage = message || '';
-  render();
+  // 編集中(シート表示中)は再描画しない: 入力欄やカラーピッカーからフォーカスを奪わないため
+  if (!uiState.sheet) render();
 }
 
 function scheduleSync() {
   const sync = loadSyncSettings();
   if (!sync || !sync.token || !sync.gistId) return;
   if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
-  syncDebounceTimer = setTimeout(() => {
+  syncDebounceTimer = setTimeout(function tick() {
+    // 編集中(シート表示中)は同期を延期し、閉じられてから実行する
+    if (uiState.sheet) {
+      syncDebounceTimer = setTimeout(tick, SYNC_DEBOUNCE_MS);
+      return;
+    }
     syncDebounceTimer = null;
     pushSync().catch((e) => console.error('同期(push)に失敗しました', e));
   }, SYNC_DEBOUNCE_MS);
@@ -928,6 +952,11 @@ async function pushSync() {
 async function pullSync() {
   const sync = loadSyncSettings();
   if (!sync || !sync.token || !sync.gistId) return;
+  // 編集中(シート表示中)は取り込みをスキップ: 編集内容の巻き戻りや再描画を防ぐ
+  if (uiState.sheet) {
+    console.info('編集中のため自動同期(pull)をスキップしました');
+    return;
+  }
   if (!navigator.onLine) {
     setSyncIndicator('offline');
     return;
@@ -1146,6 +1175,13 @@ function hslToRgb(h, s, l) {
   };
 }
 
+// mixWithWhite: 色を白と混ぜて淡くする(t=0で元色、t=1で白)。
+// 明るい色でも白に振り切れず色味が残るため、淡色の導出はこちらを使う
+function mixWithWhite(hex, t) {
+  const { r, g, b } = hexToRgb(hex);
+  return rgbToHex(r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t);
+}
+
 function adjustLightness(hex, deltaPercent) {
   try {
     const { r, g, b } = hexToRgb(hex);
@@ -1207,9 +1243,12 @@ function applyTheme(settings) {
   root.setProperty('--primary', primary);
   root.setProperty('--secondary', secondary);
   root.setProperty('--primary-dark', adjustLightness(primary, -15));
-  root.setProperty('--primary-light', adjustLightness(primary, 20));
+  root.setProperty('--primary-light', mixWithWhite(primary, 0.55));
   root.setProperty('--secondary-dark', adjustLightness(secondary, -15));
-  root.setProperty('--secondary-light', adjustLightness(secondary, 20));
+  root.setProperty('--secondary-light', mixWithWhite(secondary, 0.55));
+  root.setProperty('--bg', mixWithWhite(primary, 0.88));
+  root.setProperty('--bg-top', mixWithWhite(primary, 0.55));
+  root.setProperty('--bg-bottom', mixWithWhite(secondary, 0.55));
   const effective = computeEffectiveColors(settings);
   Object.keys(effective.cat).forEach((key) => {
     root.setProperty(CATEGORIES[key].colorVar, effective.cat[key]);
@@ -1439,13 +1478,12 @@ function renderShiftButtons(shift) {
 
 function renderDayEventItem(ev) {
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
-  const period = ev.startDate !== ev.endDate ? `${formatDateLabel(ev.startDate)}〜${formatDateLabel(ev.endDate)}` : '';
-  const timeLabel = ev.time ? `${ev.time}〜${ev.endTime || ''}` : '';
+  const schedule = formatEventSchedule(ev);
   return `
     <div class="event-item" style="border-left-color:var(${cat.colorVar})">
       <div class="event-item-main">
         <div class="event-item-title">${escapeHtml(ev.title)}</div>
-        <div class="event-item-meta">${escapeHtml(cat.label)}${period ? ' ・ ' + escapeHtml(period) : ''}${timeLabel ? ' ・ ' + escapeHtml(timeLabel) : ''}</div>
+        <div class="event-item-meta">${escapeHtml(cat.label)}${schedule ? ' ・ ' + escapeHtml(schedule) : ''}</div>
         ${ev.memo ? `<div class="event-item-memo">${linkifyText(ev.memo)}</div>` : ''}
         ${ev.publicMemo ? `<div class="event-item-memo event-item-public-memo">📢 ${linkifyText(ev.publicMemo)}</div>` : ''}
       </div>
@@ -1722,6 +1760,15 @@ function updateSettings(partial) {
   }));
 }
 
+// updateSettingsQuiet: 再描画なしで設定を保存する(色変更中にカラーピッカーを閉じさせないため)
+// テーマ反映はCSS変数の書き換えのみで行うので、画面の再構築は不要
+function updateSettingsQuiet(partial) {
+  state = { ...state, settings: { ...state.settings, ...partial, updatedAt: Date.now() } };
+  saveState(state);
+  applyTheme(state.settings);
+  scheduleSync();
+}
+
 function handleSettingChange(key, inputEl) {
   if (key === 'notifyEnabled') {
     const checked = inputEl.checked;
@@ -1747,7 +1794,7 @@ function handleSettingChange(key, inputEl) {
     return;
   }
   if (key === 'themePrimary' || key === 'themeSecondary') {
-    updateSettings({ [key]: inputEl.value });
+    updateSettingsQuiet({ [key]: inputEl.value });
     return;
   }
   if (key === 'publicEnabled') {
@@ -1777,12 +1824,12 @@ function handleCopyPublicLink(url) {
 
 function handleCategoryColorChange(catKey, value) {
   if (!CATEGORIES[catKey]) return;
-  updateSettings({ categoryColors: { ...(state.settings.categoryColors || {}), [catKey]: value } });
+  updateSettingsQuiet({ categoryColors: { ...(state.settings.categoryColors || {}), [catKey]: value } });
 }
 
 function handleShiftColorChange(code, value) {
   if (!SHIFT_DEFS[code]) return;
-  updateSettings({ shiftColors: { ...(state.settings.shiftColors || {}), [code]: value } });
+  updateSettingsQuiet({ shiftColors: { ...(state.settings.shiftColors || {}), [code]: value } });
 }
 
 function handleResetColors() {
@@ -2204,6 +2251,7 @@ if (typeof window !== 'undefined') {
     SHIFT_DEFS,
     STORAGE_KEYS,
     PUBLIC_CATEGORIES,
+    formatEventSchedule,
     // date-utils
     pad2,
     fmtDate,
@@ -2243,6 +2291,7 @@ if (typeof window !== 'undefined') {
     rgbToHsl,
     hslToRgb,
     adjustLightness,
+    mixWithWhite,
     mixHue,
     defaultCategoryColors,
     computeEffectiveColors,
