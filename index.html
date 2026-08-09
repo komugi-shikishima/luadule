@@ -28,6 +28,7 @@
   --cat-members:#7cc3d8;
   --cat-call:#c9a8e0;
   --cat-other:#b8b8b8;
+  --cat-anniversary:#e8b04f;
   --cat-personal:#a8d5ba;
   --shift-1:#e893ac;
   --shift-2:#7cc3d8;
@@ -294,6 +295,7 @@ const CATEGORIES = {
   members:  { kind: 'oshi',     label: '限定配信',   colorVar: '--cat-members',  period: false },
   call:     { kind: 'oshi',     label: 'FB通話',     colorVar: '--cat-call',     period: false },
   other:    { kind: 'oshi',     label: 'その他',     colorVar: '--cat-other',    period: true },
+  anniversary: { kind: 'both', label: '記念日', colorVar: '--cat-anniversary', period: false },
   personal: { kind: 'personal', label: '自分の予定', colorVar: '--cat-personal', period: true },
 };
 
@@ -308,11 +310,11 @@ const SHIFT_DEFS = {
 const SHIFT_CODE_ORDER = ['1', '2', '3', 'off', 'hw'];
 const SHIFT_COLOR_DEFAULTS = { '1': '#e893ac', '2': '#7cc3d8', '3': '#c9a8e0', off: '#8fbf9f', hw: '#f0a860' };
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
-const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, 'today-time': 3, 'shift-tomorrow': 4 };
+const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3, 'shift-tomorrow': 4 };
 const GIST_DESCRIPTION = 'oshical-sync-v1';
 const GIST_FILENAME = 'oshical.enc.json';
-// 公開カレンダー(§12): 公開できるのは推しカテゴリのうちメンバー限定でない5種のみ
-const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other'];
+// 公開カレンダー(§12): 公開できるのは推しカテゴリのうちメンバー限定でない5種+記念日
+const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'other', 'anniversary'];
 const GIST_PUBLIC_DESCRIPTION = 'oshical-public-v1';
 const GIST_PUBLIC_FILENAME = 'oshical-public.json';
 const GITHUB_API = 'https://api.github.com';
@@ -415,8 +417,18 @@ function formatDateLabel(dateStr) {
 
 // formatEventSchedule: 予定の日時表記を統一する純関数
 // 期間もの: 「6月20日(土)19:00〜8月9日(日) 23:59まで」 / 単日: 「21:00〜22:30」
+// anniversary(記念日): 「毎年5月10日」+ time/endTimeがあれば単日と同じ流儀で付ける
+// この関数はアプリ/公開ページ/通知の3実装で同一仕様に保つこと
 function formatEventSchedule(ev) {
   if (!ev) return '';
+  if (ev.category === 'anniversary') {
+    if (!ev.startDate) return '';
+    const { m, d } = parseDateStr(ev.startDate);
+    const base = `毎年${m}月${d}日`;
+    if (!ev.time && !ev.endTime) return base;
+    if (!ev.time) return `${base} ${ev.endTime}まで`;
+    return `${base} ${ev.time}〜${ev.endTime || ''}`;
+  }
   const multi = ev.startDate !== ev.endDate;
   if (multi) {
     const start = `${formatDateLabel(ev.startDate)}${ev.time ? ` ${ev.time}` : ''}`;
@@ -526,12 +538,45 @@ function setState(updater) {
 /* =========================================================
  * 4. logic — 純関数のみ。window.__oshicalTest__ で公開する
  * ========================================================= */
-function eventsOnDay(targetState, dateStr) {
-  const events = (targetState && targetState.events) || [];
-  return events.filter((ev) => ev && !ev.deleted && isDateInRange(dateStr, ev.startDate, ev.endDate));
+
+// isLeapYear: うるう年(2月29日が存在する年)かどうかを判定する純関数
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
+// occursOnDay: 指定した日にその予定が表示されるかを判定する純関数。
+// anniversary(記念日)以外は従来通り isDateInRange による期間内判定。
+// anniversary は startDate の月日が dateStr の月日と一致すれば年を問わず毎年表示する。
+// 例外: startDate が 02-29(うるう日)の記念日は、2月29日が存在しない平年では 02-28 に表示する
+// (うるう年はその年の02-29のみに表示され、平年の02-28と二重表示にはならない)
+function occursOnDay(ev, dateStr) {
+  if (!ev || !dateStr) return false;
+  if (ev.category !== 'anniversary') {
+    return isDateInRange(dateStr, ev.startDate, ev.endDate);
+  }
+  if (!ev.startDate) return false;
+  const start = parseDateStr(ev.startDate);
+  const target = parseDateStr(dateStr);
+  if (start.m === target.m && start.d === target.d) return true;
+  if (start.m === 2 && start.d === 29 && target.m === 2 && target.d === 28) {
+    return !isLeapYear(target.y);
+  }
+  return false;
+}
+
+function eventsOnDay(targetState, dateStr) {
+  const events = (targetState && targetState.events) || [];
+  return events.filter((ev) => ev && !ev.deleted && occursOnDay(ev, dateStr));
+}
+
+// isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
+// anniversary(記念日)は年を問わず「startDateの月 === 対象月」で判定する
+// (02-29登録の記念日は平年でも02-28に表示されるため、この月判定で正しい)
 function isEventInMonth(ev, year, month) {
+  if (ev && ev.category === 'anniversary') {
+    if (!ev.startDate) return false;
+    return parseDateStr(ev.startDate).m === month;
+  }
   const monthStart = startOfMonthStr(year, month);
   const monthEnd = endOfMonthStr(year, month);
   return isDateInRange(ev.startDate, monthStart, monthEnd)
@@ -598,7 +643,7 @@ function buildPublicPayload(targetState, now) {
   const colors = {};
   PUBLIC_CATEGORIES.forEach((key) => { colors[key] = effective.cat[key]; });
   const publicEvents = events
-    .filter((ev) => ev && !ev.deleted && ev.public === true && PUBLIC_CATEGORIES.indexOf(ev.category) !== -1)
+    .filter((ev) => ev && !ev.deleted && ev.public === true && ev.kind === 'oshi' && PUBLIC_CATEGORIES.indexOf(ev.category) !== -1)
     .map((ev) => ({
       id: ev.id,
       category: ev.category,
@@ -669,6 +714,11 @@ function computeReminders(targetState, today) {
     if (isTimedKind && ev.startDate === today) {
       const range = ev.time ? ` ${ev.time}〜${ev.endTime || ''}` : '';
       addReminder(ev.id, 'today-time', `📺 『${ev.title}』今日${range}`);
+    }
+    // anniversary(記念日): 単日予定なので既存の期間系リマインド(lastday等)は適用されない。
+    // occursOnDay で毎年の同月日判定を行い、一致した日にだけ🎉リマインドを出す
+    if (ev.category === 'anniversary' && occursOnDay(ev, today)) {
+      addReminder(ev.id, 'anniversary', `🎉 今日は『${ev.title}』!`);
     }
   });
 
@@ -1292,6 +1342,7 @@ function defaultCategoryColors(primary, secondary) {
     members: adjustLightness(secondary, -12),
     call: mixHue(primary, secondary),
     other: '#b8b8b8',
+    anniversary: '#e8b04f', // 金色(テーマに依存しない固定既定色)
     personal: '#a8d5ba',
   };
 }
@@ -1687,7 +1738,7 @@ function renderEventFormSheet() {
     { value: 'oshi', label: '推し' },
     { value: 'personal', label: '自分' },
   ];
-  const categoryOptions = Object.keys(CATEGORIES).filter((key) => CATEGORIES[key].kind === ev.kind);
+  const categoryOptions = Object.keys(CATEGORIES).filter((key) => CATEGORIES[key].kind === ev.kind || CATEGORIES[key].kind === 'both');
   const isPeriodCategory = CATEGORIES[ev.category] ? CATEGORIES[ev.category].period : true;
 
   return `
@@ -2243,6 +2294,7 @@ function handleAction(el) {
       break;
     case 'set-kind': {
       const kind = el.dataset.value;
+      // kind は必ず 'oshi' か 'personal' の完全一致で探す(kind:'both' の記念日は既定選択にしない)
       const firstCategory = Object.keys(CATEGORIES).find((k) => CATEGORIES[k].kind === kind);
       const draft = fixDraftPublic(fixDraftLongTerm(fixDraftEndDate({ ...uiState.editingEvent, kind, category: firstCategory })));
       setUiState({ editingEvent: draft });
@@ -2521,6 +2573,8 @@ if (typeof window !== 'undefined') {
     migrateData,
     purgeOldTombstones,
     // logic
+    isLeapYear,
+    occursOnDay,
     eventsOnDay,
     isEventInMonth,
     fixDraftEndDate,
