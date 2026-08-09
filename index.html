@@ -638,7 +638,7 @@ function fixDraftLongTerm(draft) {
 }
 
 // listLongTermEvents: 上部一覧に出す長期予定を返す純関数。
-// 削除済みでない longTerm===true の全イベントを startDate 昇順(同じなら endDate 昇順)で返す。
+// 削除済みでない longTerm===true の全イベントを、締切日(endDate)が近い順(同じなら startDate 昇順)で返す。
 // 表示中の月による絞り込みは行わない。
 // today(YYYY-MM-DD)を渡すと、終了した予定(endDate < today)は一覧に出さない(最終日当日は表示する)。
 // 日マスの細ライン(period-lines)や日詳細の折りたたみ(期間中の長期予定)のロジックは対象外(過去の月でも見られる)。
@@ -649,7 +649,7 @@ function listLongTermEvents(targetState, today) {
     .filter((ev) => ev && !ev.deleted && ev.longTerm === true)
     .filter((ev) => !today || compareDates(ev.endDate, today) >= 0)
     .slice()
-    .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+    .sort((a, b) => compareDates(a.endDate, b.endDate) || compareDates(a.startDate, b.startDate));
 }
 
 // listMonthlyEvents: 「今月のイベント予定」枠に出すイベントカテゴリの予定を返す純関数。
@@ -1601,7 +1601,7 @@ function renderLongTermSection() {
   if (!items.length) return '';
   return `
     <section class="longterm-section">
-      <h2 class="longterm-title">📌 販売期間中 一覧</h2>
+      <h2 class="longterm-title">📌 販売期間中 一覧（締切日が近い順）</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev)).join('')}
       </div>
