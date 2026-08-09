@@ -136,13 +136,29 @@ h1,h2,h3{ margin:0; }
 .today-date-label{ font-size:0.78rem; font-weight:400; color:var(--text-muted); white-space:nowrap; }
 .today-shift-row{ font-size:0.88rem; margin-bottom:6px; }
 .longterm-item{
-  display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
+  position:relative; display:flex; align-items:center; gap:8px; width:100%; min-height:44px;
   background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
+}
+.longterm-item.is-purchased{ opacity:0.55; }
+.longterm-item-tap{
+  display:flex; align-items:stretch; gap:8px; flex:1; min-width:0; min-height:44px; border:none;
+  text-align:left; background:transparent; padding:0; margin:0; font:inherit; color:inherit;
 }
 .longterm-bar{ width:5px; border-radius:3px; flex-shrink:0; }
 .longterm-body{ display:flex; flex-direction:column; gap:2px; min-width:0; }
 .longterm-item-title{ font-size:0.92rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .longterm-item-schedule{ font-size:0.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.longterm-purchase{ flex-shrink:0; display:flex; align-items:center; }
+.longterm-purchase-label{
+  display:flex; align-items:center; gap:4px; min-height:44px; padding:0 4px; font-size:0.78rem;
+  color:var(--text-muted); white-space:nowrap; cursor:pointer;
+}
+.longterm-purchase-label input[type="checkbox"]{ width:18px; height:18px; cursor:pointer; }
+.purchased-stamp{
+  position:absolute; top:-8px; right:6px; border:2px solid #c94f4f; color:#c94f4f;
+  background:rgba(255,255,255,0.8); padding:1px 8px; border-radius:6px; font-weight:700;
+  font-size:0.72rem; letter-spacing:1px; transform:rotate(-12deg); pointer-events:none;
+}
 
 /* sheet */
 .sheet-backdrop{
@@ -215,6 +231,7 @@ h1,h2,h3{ margin:0; }
 }
 .btn-primary{ background:var(--primary-dark); color:#fff; }
 .btn-secondary{ background:#fff; border:1px solid var(--border); color:var(--text); }
+.today-share-btn{ width:100%; margin-top:10px; }
 
 /* settings */
 .settings-section{ border-bottom:1px solid var(--border); padding-bottom:14px; }
@@ -491,6 +508,7 @@ function normalizeEvent(ev) {
     publicMemo: typeof ev.publicMemo === 'string' ? ev.publicMemo : '',
     endTime: typeof ev.endTime === 'string' ? ev.endTime : '',
     longTerm: typeof ev.longTerm === 'boolean' ? ev.longTerm : false,
+    purchased: typeof ev.purchased === 'boolean' ? ev.purchased : false,
   };
 }
 
@@ -609,6 +627,26 @@ function todayAgenda(targetState, today) {
   const shiftRaw = (targetState.shifts || {})[today];
   const shift = (shiftRaw && !shiftRaw.deleted) ? shiftRaw : null;
   return { dateStr: today, events, shift };
+}
+
+// buildShareLines: 「今日の予定」画像(Twitter添付用)に載せる行データを組み立てる純関数。
+// 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
+function buildShareLines(agenda, settings) {
+  const s = settings || {};
+  const a = agenda || { dateStr: '', events: [], shift: null };
+  const title = `${s.oshiName || '推し'}カレンダー`;
+  const dateLabel = a.dateStr ? formatDateLabel(a.dateStr) : '';
+  const shiftDef = (a.shift && SHIFT_DEFS[a.shift.code]) || null;
+  const shiftLine = shiftDef ? `💼 ${shiftDef.label}${shiftDef.time ? `(${shiftDef.time})` : ''}` : '';
+  const effective = computeEffectiveColors(s);
+  const items = (a.events || []).map((ev) => {
+    const cat = CATEGORIES[ev.category] || CATEGORIES.other;
+    const schedule = formatEventScheduleWithDate(ev);
+    const meta = schedule ? `${cat.label}・${schedule}` : cat.label;
+    const color = effective.cat[ev.category] || effective.cat.other;
+    return { title: ev.title, meta, color };
+  });
+  return { title, dateLabel, shiftLine, items };
 }
 
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
@@ -1581,6 +1619,7 @@ function renderTodaySection() {
       <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
       ${shiftRow}
       ${body}
+      <button type="button" class="btn-secondary today-share-btn" data-action="share-today-image">📷 画像を保存</button>
     </section>
   `;
 }
@@ -1608,7 +1647,8 @@ function renderMonthlyEventSection() {
 
 // renderLongTermSection: カレンダー上部の長期予定一覧。全件表示(月による絞り込みなし)。
 // ただし終了した予定(endDate < today)は一覧から除外する(最終日当日は表示する)。
-// タップでその予定の個別詳細シートを開く
+// タップでその予定の個別詳細シートを開く。この一覧のみ showPurchased:true を渡し、
+// 購入済みチェック・赤いハンコ・薄色表示を有効にする(他2箇所の一覧では表示しない)
 function renderLongTermSection() {
   const items = listLongTermEvents(state, todayStr());
   if (!items.length) return '';
@@ -1616,22 +1656,44 @@ function renderLongTermSection() {
     <section class="longterm-section">
       <h2 class="longterm-title">📌 販売期間中 一覧（締切日が近い順）</h2>
       <div class="longterm-list">
-        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+        ${items.map((ev) => renderLongTermItem(ev, { showPurchased: true })).join('')}
       </div>
     </section>
   `;
 }
 
-function renderLongTermItem(ev) {
+// renderLongTermItem: 「今月のイベント予定」「📌 販売期間中 一覧」「📅 今日の予定」の3箇所で共用する一覧アイテム。
+// options.showPurchased が true のとき(=「📌 販売期間中 一覧」からの呼び出しのみ)だけ、
+// 購入済みチェックボックス・赤いハンコ・薄色表示を追加する。タップ領域は内側の
+// <button class="longterm-item-tap"> に限定し(外側はHTML的に正しい<div>)、チェックボックスは
+// その外の<span>に置くことで、チェック操作がアイテム全体のタップ(open-event)に吸われないようにする
+function renderLongTermItem(ev, options) {
+  const opts = options || {};
+  const showPurchased = opts.showPurchased === true;
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
-  return `
-    <button type="button" class="longterm-item" data-action="open-event" data-id="${escapeHtml(ev.id)}">
-      <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
-      <span class="longterm-body">
-        <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
-        <span class="longterm-item-schedule">${escapeHtml(cat.label)}・${escapeHtml(formatEventScheduleWithDate(ev))}</span>
+  const purchased = showPurchased && ev.purchased === true;
+  const purchaseHtml = showPurchased
+    ? `
+      <span class="longterm-purchase">
+        <label class="longterm-purchase-label">
+          <input type="checkbox" data-purchase-toggle="${escapeHtml(ev.id)}" ${ev.purchased === true ? 'checked' : ''}>
+          購入済み
+        </label>
       </span>
-    </button>
+    `
+    : '';
+  const stampHtml = purchased ? `<span class="purchased-stamp">購入済</span>` : '';
+  return `
+    <div class="longterm-item${purchased ? ' is-purchased' : ''}">
+      <button type="button" class="longterm-item-tap" data-action="open-event" data-id="${escapeHtml(ev.id)}">
+        <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
+        <span class="longterm-body">
+          <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
+          <span class="longterm-item-schedule">${escapeHtml(cat.label)}・${escapeHtml(formatEventScheduleWithDate(ev))}</span>
+        </span>
+      </button>
+      ${purchaseHtml}${stampHtml}
+    </div>
   `;
 }
 
@@ -2193,6 +2255,7 @@ function handleSaveEvent() {
       endTime: draft.endTime || '',
       public: !!draft.public,
       longTerm: !!draft.longTerm,
+      purchased: false,
       updatedAt: now,
       deleted: false,
     };
@@ -2215,6 +2278,17 @@ function handleDeleteEvent(id) {
   }
 }
 
+// handlePurchasedToggle: 「📌 販売期間中 一覧」のチェックボックスで購入済み状態を切り替える。
+// setState経由の不変更新(同期にも反映される)。対象が見つからなければ何もしない
+function handlePurchasedToggle(id, checked) {
+  const ev = state.events.find((x) => x.id === id);
+  if (!ev) return;
+  setState((prev) => ({
+    events: prev.events.map((e2) => (e2.id === id ? { ...e2, purchased: checked, updatedAt: Date.now() } : e2)),
+  }));
+  showToast(checked ? '購入済みにしました' : '購入済みを解除しました');
+}
+
 function handleSetShift(code) {
   const dateStr = uiState.selectedDate;
   if (!dateStr) return;
@@ -2230,6 +2304,168 @@ function handleSetShift(code) {
     }
     return { shifts: nextShifts };
   });
+}
+
+// drawRoundedRect: canvasに角丸矩形のパスを作る補助関数(fill/strokeは呼び出し側で行う)
+function drawRoundedRect(ctx, x, y, w, h, radius) {
+  const r = Math.min(radius, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// truncateToWidth: ctx.measureTextで幅を測り、収まらない文字列を「…」付きで切り詰める補助関数
+function truncateToWidth(ctx, text, maxWidth) {
+  const str = text === null || text === undefined ? '' : String(text);
+  if (ctx.measureText(str).width <= maxWidth) return str;
+  let low = 0;
+  let high = str.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = `${str.slice(0, mid)}…`;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return `${str.slice(0, low)}…`;
+}
+
+// handleShareTodayImage: 「今日の予定」をPNG画像として生成し、Twitter添付等のために共有/保存する。
+// Canvas APIのみで自前描画(外部ライブラリ禁止・HTML要素のキャプチャもしない)。
+// 公開用メモ(publicMemo)・自分用メモ(memo)はうっかり公開防止のため画像に一切含めない。
+// 描画中に全画面render()は呼ばない
+async function handleShareTodayImage() {
+  try {
+    const agenda = todayAgenda(state, todayStr());
+    const lines = buildShareLines(agenda, state.settings);
+
+    const width = 900;
+    const margin = 40;
+    const innerX = margin + 28;
+    const innerWidth = width - margin * 2 - 56;
+
+    // --- 1パス目: 内容量から先に高さを決める ---
+    let height = margin + 24 + 34 + 26;
+    if (lines.shiftLine) height += 30;
+    height += 10;
+    height += lines.items.length ? lines.items.length * 58 : 40;
+    height += 30 + margin;
+    height = Math.max(height, 600);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width * 2;
+    canvas.height = height * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+
+    // --- 背景グラデーション(テーマ色を薄めた既存の流儀と同じ) ---
+    const primary = (state.settings && state.settings.themePrimary) || '#f8b6c8';
+    const secondary = (state.settings && state.settings.themeSecondary) || '#a5d8e6';
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, mixWithWhite(primary, 0.3));
+    gradient.addColorStop(1, mixWithWhite(secondary, 0.3));
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    // --- 白い角丸カード ---
+    drawRoundedRect(ctx, margin, margin, width - margin * 2, height - margin * 2, 24);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    let y = margin + 40;
+
+    // --- タイトル(推しの名前) ---
+    ctx.fillStyle = '#999999';
+    ctx.font = '400 15px sans-serif';
+    ctx.fillText(truncateToWidth(ctx, lines.title, innerWidth), innerX, y);
+    y += 34;
+
+    // --- 見出し ---
+    ctx.fillStyle = '#333333';
+    ctx.font = '700 26px sans-serif';
+    ctx.fillText('📅 今日の予定', innerX, y);
+    y += 28;
+
+    // --- 日付 ---
+    ctx.fillStyle = '#666666';
+    ctx.font = '400 16px sans-serif';
+    ctx.fillText(lines.dateLabel, innerX, y);
+    y += 30;
+
+    // --- シフト行 ---
+    if (lines.shiftLine) {
+      ctx.fillStyle = '#555555';
+      ctx.font = '600 16px sans-serif';
+      ctx.fillText(lines.shiftLine, innerX, y);
+      y += 30;
+    }
+    y += 10;
+
+    // --- 予定リスト(公開用メモ・自分用メモは描画しない) ---
+    if (!lines.items.length) {
+      ctx.fillStyle = '#999999';
+      ctx.font = '400 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('今日の予定はありません', width / 2, y + 10);
+      ctx.textAlign = 'left';
+    } else {
+      lines.items.forEach((item) => {
+        ctx.fillStyle = item.color;
+        drawRoundedRect(ctx, innerX, y - 16, 5, 40, 4);
+        ctx.fill();
+        ctx.fillStyle = '#333333';
+        ctx.font = '700 17px sans-serif';
+        ctx.fillText(truncateToWidth(ctx, item.title, innerWidth - 20), innerX + 16, y);
+        ctx.fillStyle = '#888888';
+        ctx.font = '400 13px sans-serif';
+        ctx.fillText(truncateToWidth(ctx, item.meta, innerWidth - 20), innerX + 16, y + 20);
+        y += 58;
+      });
+    }
+
+    // --- 署名(URLは入れない) ---
+    ctx.fillStyle = '#bbbbbb';
+    ctx.font = '400 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ルアジュール', width / 2, height - margin + 10);
+    ctx.textAlign = 'left';
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('canvas.toBlobが空を返しました');
+
+    const fileName = `今日の予定_${todayStr()}.png`;
+    const file = new File([blob], fileName, { type: 'image/png' });
+
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+      } catch (shareErr) {
+        // ユーザーが共有シートをキャンセルした場合はエラー扱いにせず静かに終了する
+        if (shareErr && shareErr.name === 'AbortError') return;
+        throw shareErr;
+      }
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('画像を保存しました');
+  } catch (e) {
+    console.error('画像の作成に失敗しました', e);
+    showToast('画像の作成に失敗しました');
+  }
 }
 
 function handleExportData() {
@@ -2395,6 +2631,9 @@ function handleAction(el) {
     case 'copy-public-link':
       handleCopyPublicLink(el.dataset.url);
       break;
+    case 'share-today-image':
+      handleShareTodayImage();
+      break;
     default:
       break;
   }
@@ -2406,6 +2645,9 @@ function onAppClick(e) {
     requestCloseSheet();
     return;
   }
+  // 購入済みチェックボックス(とそのラベル)のクリックは、アイテム全体のタップ(open-event)に
+  // 吸われないようにここでガードする
+  if (e.target.closest('[data-purchase-toggle]')) return;
   const actionEl = e.target.closest('[data-action]');
   if (!actionEl) return;
   handleAction(actionEl);
@@ -2432,6 +2674,10 @@ function onAppChange(e) {
   if (e.target.id === 'import-file-input') {
     const file = e.target.files && e.target.files[0];
     if (file) handleImportFile(file);
+    return;
+  }
+  if (e.target.dataset.purchaseToggle) {
+    handlePurchasedToggle(e.target.dataset.purchaseToggle, e.target.checked);
     return;
   }
   if (e.target.dataset.colorCat) {
@@ -2658,6 +2904,7 @@ if (typeof window !== 'undefined') {
     fixDraftLongTerm,
     listLongTermEvents,
     listMonthlyEvents,
+    buildShareLines,
     isDraftDirty,
     buildPublicPayload,
     validateEventInput,
