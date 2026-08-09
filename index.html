@@ -190,6 +190,9 @@ h1,h2,h3{ margin:0; }
   width:100%; min-height:44px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-sm);
   margin-bottom:8px;
 }
+.notify-time-row{ display:flex; gap:20px; }
+.notify-time-row label{ display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text-muted); }
+.notify-time-row select{ min-height:44px; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius-sm); background:#fff; font-size:0.9rem; }
 .theme-color-row{ display:flex; gap:20px; }
 .theme-color-row label{ display:flex; flex-direction:column; gap:4px; font-size:0.85rem; color:var(--text-muted); }
 .settings-section h4{ margin:12px 0 6px; font-size:0.85rem; color:var(--text-muted); }
@@ -368,6 +371,8 @@ function getDefaultState() {
       themePrimary: '#f8b6c8',
       themeSecondary: '#a5d8e6',
       notifyEnabled: false,
+      notifyMorningHour: 7,   // Discord朝通知の時刻(0〜23、-1=送らない)。GitHub Actions側が参照
+      notifyEveningHour: 20,  // Discord夜通知の時刻(0〜23、-1=送らない)
       publicEnabled: false, // 公開カレンダー(§12)のON/OFF。設定ごと同期され全端末で揃う
       categoryColors: {}, // カテゴリごとの色の上書き。空文字/未設定=テーマから自動導出
       shiftColors: {},    // シフトごとの色の上書き。空文字/未設定=標準色
@@ -1488,6 +1493,16 @@ function renderPublicCheckboxField(ev) {
   `;
 }
 
+// renderHourSelect: 0〜23時+「送らない」の時刻セレクトを描画する
+function renderHourSelect(settingKey, value, defaultHour) {
+  const current = Number.isInteger(value) ? value : defaultHour;
+  const options = [`<option value="-1"${current === -1 ? ' selected' : ''}>送らない</option>`];
+  for (let h = 0; h < 24; h++) {
+    options.push(`<option value="${h}"${current === h ? ' selected' : ''}>${h}時</option>`);
+  }
+  return `<select data-setting="${settingKey}">${options.join('')}</select>`;
+}
+
 function notificationSupportHint() {
   if (typeof Notification === 'undefined') return '(このブラウザは通知に対応していません)';
   if (location.protocol !== 'https:' && location.hostname !== 'localhost') return '(通知はhttps環境でのみ利用できます)';
@@ -1523,6 +1538,12 @@ function renderSettingsSheet() {
           通知をONにする
         </label>
         <p class="settings-hint">${notificationSupportHint()}</p>
+        <h4>Discord通知の時刻</h4>
+        <div class="notify-time-row">
+          <label>朝${renderHourSelect('notifyMorningHour', settings.notifyMorningHour, 7)}</label>
+          <label>夜${renderHourSelect('notifyEveningHour', settings.notifyEveningHour, 20)}</label>
+        </div>
+        <p class="settings-hint">Discord通知係を設定している場合のみ有効。変更は次の正時から反映されます</p>
       </section>
       <section class="settings-section">
         <h3>同期(GitHub Gist)</h3>
@@ -1662,6 +1683,13 @@ function handleSettingChange(key, inputEl) {
   }
   if (key === 'oshiName') {
     updateSettings({ oshiName: inputEl.value });
+    return;
+  }
+  if (key === 'notifyMorningHour' || key === 'notifyEveningHour') {
+    const hour = parseInt(inputEl.value, 10);
+    if (Number.isInteger(hour) && hour >= -1 && hour <= 23) {
+      updateSettings({ [key]: hour });
+    }
     return;
   }
   if (key === 'themePrimary' || key === 'themeSecondary') {

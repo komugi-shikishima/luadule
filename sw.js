@@ -9,7 +9,7 @@
  * - バージョン文字列(CACHE_VERSION)を上げることでキャッシュを更新できる
  */
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const CACHE_NAME = `oshical-cache-${CACHE_VERSION}`;
 const PRECACHE_URLS = ['./', './index.html', './sw.js', './public.html'];
 
