@@ -74,7 +74,7 @@ jobs:
           };
           const CAT_LABELS = {
             event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信',
-            call: 'FB通話', other: 'その他', personal: '自分の予定',
+            call: 'FB通話', other: 'その他', anniversary: '記念日', personal: '自分の予定',
           };
           const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -124,6 +124,22 @@ jobs:
             return toDateStr(new Date(Date.UTC(y, m - 1, d + n)));
           }
           function inRange(x, a, b) { return x >= a && x <= b; }
+          // isLeapYear: うるう年(2月29日が存在する年)かどうかを判定する純関数(index.htmlと同一仕様)
+          function isLeapYear(year) { return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0; }
+          // occursOnDay: 指定した日にその予定が表示されるかを判定する純関数(index.htmlと同一仕様)。
+          // anniversary(記念日)以外は従来通り inRange による期間内判定。
+          // anniversary は startDate の月日が dateStr の月日と一致すれば年を問わず毎年表示する。
+          // 例外: startDate が 02-29(うるう日)の記念日は、2月29日が存在しない平年では 02-28 に表示する
+          function occursOnDay(e, dateStr) {
+            if (!e || !dateStr) return false;
+            if (e.category !== 'anniversary') return inRange(dateStr, e.startDate, e.endDate);
+            if (!e.startDate) return false;
+            const [, sm, sd] = e.startDate.split('-').map(Number);
+            const [ty, tm, td] = dateStr.split('-').map(Number);
+            if (sm === tm && sd === td) return true;
+            if (sm === 2 && sd === 29 && tm === 2 && td === 28) return !isLeapYear(ty);
+            return false;
+          }
           function fmtMD(s) { const p = s.split('-').map(Number); return `${p[1]}/${p[2]}`; }
           function weekday(s) {
             const [y, m, d] = s.split('-').map(Number);
@@ -155,7 +171,7 @@ jobs:
           }
           function eventLines(events, dateStr) {
             return activeEvents(events)
-              .filter((e) => inRange(dateStr, e.startDate, e.endDate))
+              .filter((e) => occursOnDay(e, dateStr))
               .map((e) => {
                 const cat = CAT_LABELS[e.category] || 'その他';
                 const multi = e.startDate !== e.endDate;
