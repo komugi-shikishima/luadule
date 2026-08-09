@@ -115,6 +115,8 @@ h1,h2,h3{ margin:0; }
 }
 .event-item-title{ font-weight:700; overflow-wrap:anywhere; }
 .event-item-meta{ font-size:0.8rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.event-item-memo{ font-size:0.82rem; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.event-item-memo a{ color:var(--secondary-dark); word-break:break-all; }
 .empty-hint{ color:var(--text-muted); font-size:0.9rem; }
 
 .state-box{ margin:40px 16px; text-align:center; color:var(--text-muted); }
@@ -241,6 +243,14 @@ function safeColor(value, fallback) {
   return typeof value === 'string' && COLOR_RE.test(value) ? value : fallback;
 }
 
+// linkifyText: エスケープ済みテキスト中の https?:// のURLだけを安全な<a>に変換する
+// 必ず先にescapeHtmlを通すこと。javascript:等は正規表現で最初から除外される
+function linkifyText(str) {
+  const escaped = escapeHtml(str);
+  return escaped.replace(/(https?:\/\/[^\s<>&"']+(?:&amp;[^\s<>&"']+)*)/g,
+    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow">${url}</a>`);
+}
+
 /* ---------- 4. データ取得・検証(Gist由来データは信頼しない) ---------- */
 function getGistIdFromUrl() {
   const params = new URLSearchParams(location.search);
@@ -290,7 +300,8 @@ function sanitizeEvent(ev) {
   if (typeof ev.endDate !== 'string' || !DATE_RE.test(ev.endDate)) return null;
   const time = typeof ev.time === 'string' && TIME_RE.test(ev.time) ? ev.time : '';
   const id = typeof ev.id === 'string' ? ev.id : '';
-  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time };
+  const memo = typeof ev.memo === 'string' ? ev.memo.slice(0, 500) : '';
+  return { id, category: ev.category, title: ev.title, startDate: ev.startDate, endDate: ev.endDate, time, memo };
 }
 
 // sanitizePayload: 公開Gist由来データ全体を検証・無害化する純関数
@@ -492,6 +503,7 @@ function renderDayEventItem(ev) {
     <div class="event-item" style="border-left-color:${color}">
       <div class="event-item-title">${escapeHtml(ev.title)}</div>
       <div class="event-item-meta">${escapeHtml(catLabel)}${period ? ' ・ ' + escapeHtml(period) : ''}${ev.time ? ' ・ ' + escapeHtml(ev.time) : ''}</div>
+      ${ev.memo ? `<div class="event-item-memo">${linkifyText(ev.memo)}</div>` : ''}
     </div>
   `;
 }

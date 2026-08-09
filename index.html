@@ -154,6 +154,8 @@ h1,h2,h3{ margin:0; }
 .event-item-title{ font-weight:700; overflow-wrap:anywhere; }
 .event-item-meta{ font-size:0.8rem; color:var(--text-muted); margin-top:2px; overflow-wrap:anywhere; }
 .event-item-memo{ font-size:0.82rem; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.event-item-memo a{ color:var(--secondary-dark); word-break:break-all; }
+.event-item-public-memo{ color:var(--text-muted); }
 .event-item-actions{ display:flex; gap:4px; flex-shrink:0; }
 .event-item-actions .icon-btn{ min-width:36px; min-height:36px; box-shadow:none; background:#fff; }
 .empty-hint{ color:var(--text-muted); font-size:0.9rem; }
@@ -406,7 +408,11 @@ function getDefaultState() {
 // normalizeEvent: 旧データ互換。public フィールドが無いイベントには既定値 false を補う
 function normalizeEvent(ev) {
   if (!ev || typeof ev !== 'object') return ev;
-  return { ...ev, public: typeof ev.public === 'boolean' ? ev.public : false };
+  return {
+    ...ev,
+    public: typeof ev.public === 'boolean' ? ev.public : false,
+    publicMemo: typeof ev.publicMemo === 'string' ? ev.publicMemo : '',
+  };
 }
 
 // 将来のバージョンアップ時はここに version ごとの変換を追加していく
@@ -516,6 +522,7 @@ function buildPublicPayload(targetState, now) {
       startDate: ev.startDate,
       endDate: ev.endDate,
       time: ev.time || '',
+      memo: ev.publicMemo || '', // 公開されるのは「公開用メモ」のみ。自分用メモ(ev.memo)は絶対に含めない
     }));
   return {
     v: 1,
@@ -1071,6 +1078,14 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// linkifyText: エスケープ済みテキスト中の https?:// のURLだけを安全な<a>に変換する
+// 必ず先にescapeHtmlを通すこと。javascript:等は正規表現で最初から除外される
+function linkifyText(str) {
+  const escaped = escapeHtml(str);
+  return escaped.replace(/(https?:\/\/[^\s<>&"']+(?:&amp;[^\s<>&"']+)*)/g,
+    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow">${url}</a>`);
+}
+
 /* --- テーマ色導出(HSL操作) --- */
 function hexToRgb(hex) {
   const clean = String(hex).replace('#', '');
@@ -1244,6 +1259,7 @@ function createDraftEvent(dateStr) {
     time: '',
     memo: '',
     public: false,
+    publicMemo: '',
   };
 }
 
@@ -1426,7 +1442,8 @@ function renderDayEventItem(ev) {
       <div class="event-item-main">
         <div class="event-item-title">${escapeHtml(ev.title)}</div>
         <div class="event-item-meta">${escapeHtml(cat.label)}${period ? ' ・ ' + escapeHtml(period) : ''}${timeLabel ? ' ・ ' + escapeHtml(timeLabel) : ''}</div>
-        ${ev.memo ? `<div class="event-item-memo">${escapeHtml(ev.memo)}</div>` : ''}
+        ${ev.memo ? `<div class="event-item-memo">${linkifyText(ev.memo)}</div>` : ''}
+        ${ev.publicMemo ? `<div class="event-item-memo event-item-public-memo">📢 ${linkifyText(ev.publicMemo)}</div>` : ''}
       </div>
       <div class="event-item-actions">
         <button type="button" class="icon-btn" data-action="edit-event" data-id="${ev.id}" aria-label="編集">✎</button>
@@ -1488,7 +1505,7 @@ function renderEventFormSheet() {
         <input type="time" id="ev-time" data-field="time" value="${escapeHtml(ev.time || '')}">
       </div>
       <div class="field">
-        <label for="ev-memo">メモ</label>
+        <label for="ev-memo">メモ(自分用・非公開)</label>
         <textarea id="ev-memo" data-field="memo" rows="3" maxlength="500">${escapeHtml(ev.memo || '')}</textarea>
       </div>
       <div class="form-actions">
@@ -1509,6 +1526,12 @@ function renderPublicCheckboxField(ev) {
         <input type="checkbox" data-draft-toggle="public" ${ev.public ? 'checked' : ''}>
         公開カレンダーに載せる
       </label>
+      ${ev.public ? `
+      <div class="field">
+        <label for="ev-public-memo">公開用メモ(公開ページに表示されます)</label>
+        <textarea id="ev-public-memo" data-field="publicMemo" rows="2" maxlength="500" placeholder="例: 通販はこちら https://...">${escapeHtml(ev.publicMemo || '')}</textarea>
+      </div>` : ''}
+      <p class="settings-hint">※公開されるのはタイトル・期間・時刻・公開用メモのみ。上の「メモ」は自分専用で公開されません</p>
     </div>
   `;
 }
@@ -1780,6 +1803,7 @@ function handleSaveEvent() {
       endDate: draft.endDate,
       time: draft.time || '',
       memo: draft.memo || '',
+      publicMemo: draft.publicMemo || '',
       public: !!draft.public,
       updatedAt: now,
       deleted: false,
@@ -2213,6 +2237,7 @@ if (typeof window !== 'undefined') {
     SHIFT_COLOR_DEFAULTS,
     // misc
     escapeHtml,
+    linkifyText,
     sha256Hex,
     LOCK_HASH,
     // crypto(非同期)
