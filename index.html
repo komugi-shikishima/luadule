@@ -36,6 +36,7 @@
   --shift-off:#8fbf9f;
   --shift-hw:#f0a860;
   --memo-color:#d9578a;
+  --today-border:#e08aa0;
   --bg:#fef6f8;
   --bg-top:#fcdee6;
   --bg-bottom:#d6edf4;
@@ -107,7 +108,7 @@ h1,h2,h3{ margin:0; }
   text-align:left; position:relative; min-width:0; overflow:hidden;
 }
 .day-cell.outside{ opacity:0.4; }
-.day-cell.today{ border:2px solid var(--primary); }
+.day-cell.today{ border:2px solid var(--today-border); }
 .day-cell-top{ display:flex; align-items:center; justify-content:space-between; }
 .day-num{ font-size:0.85rem; font-weight:600; }
 .shift-badge{
@@ -458,6 +459,7 @@ function getDefaultState() {
       categoryColors: {}, // カテゴリごとの色の上書き。空文字/未設定=テーマから自動導出
       shiftColors: {},    // シフトごとの色の上書き。空文字/未設定=標準色
       memoColor: '',      // 自分用メモの文字色。空文字=テーマから自動導出
+      todayColor: '',     // 今日の枠の色。空文字=テーマから自動導出
       updatedAt: 0,
     },
     events: [],
@@ -662,6 +664,7 @@ function buildPublicPayload(targetState, now) {
     theme: {
       primary: settings.themePrimary || '#f8b6c8',
       secondary: settings.themeSecondary || '#a5d8e6',
+      today: settings.todayColor || adjustLightness(settings.themePrimary || '#f8b6c8', -25),
     },
     colors,
     events: publicEvents,
@@ -1381,6 +1384,7 @@ function applyTheme(settings) {
     root.setProperty(`--shift-${code}`, effective.shift[code]);
   });
   root.setProperty('--memo-color', (settings && settings.memoColor) || adjustLightness(primary, -30));
+  root.setProperty('--today-border', (settings && settings.todayColor) || adjustLightness(primary, -25));
 }
 
 /* --- UI(画面の一時的な状態。永続データではない) --- */
@@ -1931,6 +1935,9 @@ function renderColorCustomizeSection(settings) {
         <label class="color-item">自分用メモ
           <input type="color" data-color-memo="1" value="${escapeHtml(settings.memoColor || adjustLightness(settings.themePrimary || '#f8b6c8', -30))}">
         </label>
+        <label class="color-item">今日の枠
+          <input type="color" data-color-today="1" value="${escapeHtml(settings.todayColor || adjustLightness(settings.themePrimary || '#f8b6c8', -25))}">
+        </label>
       </div>
       <button type="button" class="btn-secondary" data-action="reset-colors">標準の色に戻す</button>
     </section>
@@ -2091,7 +2098,7 @@ function handleShiftColorChange(code, value) {
 }
 
 function handleResetColors() {
-  updateSettings({ categoryColors: {}, shiftColors: {}, memoColor: '' });
+  updateSettings({ categoryColors: {}, shiftColors: {}, memoColor: '', todayColor: '' });
   showToast('標準の色に戻しました');
 }
 
@@ -2374,6 +2381,10 @@ function onAppChange(e) {
   }
   if (e.target.dataset.colorMemo) {
     updateSettingsQuiet({ memoColor: e.target.value });
+    return;
+  }
+  if (e.target.dataset.colorToday) {
+    updateSettingsQuiet({ todayColor: e.target.value });
     return;
   }
   if (e.target.dataset.draftToggle === 'public' && uiState.editingEvent) {
