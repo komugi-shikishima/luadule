@@ -159,7 +159,9 @@ jobs:
               .map((e) => {
                 const cat = CAT_LABELS[e.category] || 'その他';
                 const multi = e.startDate !== e.endDate;
-                const extra = multi ? `(${fmtMD(e.startDate)}〜${fmtMD(e.endDate)})` : (e.time ? ` ${timeRange(e)}` : '');
+                const extra = multi
+                  ? `(${fmtMD(e.startDate)}${e.time ? ` ${e.time}` : ''}〜${fmtMD(e.endDate)}${e.endTime ? ` ${e.endTime}まで` : ''})`
+                  : (e.time ? ` ${timeRange(e)}` : '');
                 return `・[${cat}] ${e.title}${extra}`;
               });
           }
