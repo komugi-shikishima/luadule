@@ -549,6 +549,10 @@ function buildPublicPayload(targetState, now) {
     v: 1,
     updatedAt: typeof now === 'number' ? now : Date.now(),
     oshiName: settings.oshiName || '',
+    theme: {
+      primary: settings.themePrimary || '#f8b6c8',
+      secondary: settings.themeSecondary || '#a5d8e6',
+    },
     colors,
     events: publicEvents,
   };
@@ -987,7 +991,10 @@ async function pullSync() {
     setSyncIndicator('synced');
     if (remoteChanged) {
       syncInProgress = false; // pushSync の再入ガードで弾かれないよう先に解除する
-      await pushSync();
+      await pushSync(); // この中で公開カレンダーも更新される
+    } else {
+      // データ変更がなくても、公開カレンダー(テーマ色や表示仕様の変更分)は開くたびに最新化する
+      syncPublicCalendar().catch((e2) => console.error('公開カレンダーの更新に失敗しました', e2));
     }
   } catch (e) {
     handleSyncError(e);

@@ -255,11 +255,14 @@ function mixWithWhite(hex, t) {
   return `#${toHex(mix((n >> 16) & 255))}${toHex(mix((n >> 8) & 255))}${toHex(mix(n & 255))}`;
 }
 
-// applyPublicTheme: 公開データの色(goods=メイン系, stream=サブ系)から背景グラデーションを設定
-function applyPublicTheme(colors) {
+// applyPublicTheme: 公開データのテーマ色(メイン/サブ)から背景グラデーションを設定
+// 旧形式データ(themeなし)はカテゴリ色(goods/stream)にフォールバックする
+function applyPublicTheme(payload) {
   const root = document.documentElement.style;
-  const top = safeColor(colors && colors.goods, '#f8b6c8');
-  const bottom = safeColor(colors && colors.stream, '#a5d8e6');
+  const theme = (payload && payload.theme) || {};
+  const colors = (payload && payload.colors) || {};
+  const top = safeColor(theme.primary, safeColor(colors.goods, '#f8b6c8'));
+  const bottom = safeColor(theme.secondary, safeColor(colors.stream, '#a5d8e6'));
   root.setProperty('--bg-top', mixWithWhite(top, 0.3));
   root.setProperty('--bg-bottom', mixWithWhite(bottom, 0.3));
   root.setProperty('--bg', mixWithWhite(top, 0.88));
@@ -350,7 +353,12 @@ function sanitizePayload(raw) {
   const colorsRaw = source.colors && typeof source.colors === 'object' ? source.colors : {};
   const colors = {};
   ALLOWED_CATEGORIES.forEach((cat) => { colors[cat] = safeColor(colorsRaw[cat], DEFAULT_COLORS[cat]); });
-  return { oshiName, colors, events };
+  const themeRaw = source.theme && typeof source.theme === 'object' ? source.theme : {};
+  const theme = {
+    primary: safeColor(themeRaw.primary, '#f8b6c8'),
+    secondary: safeColor(themeRaw.secondary, '#a5d8e6'),
+  };
+  return { oshiName, theme, colors, events };
 }
 
 /* ---------- 5. logic(簡易版リマインド・当日抽出) ---------- */
@@ -611,7 +619,7 @@ async function init() {
   try {
     const raw = await loadPublicData(gistId);
     const payload = sanitizePayload(raw);
-    applyPublicTheme(payload.colors);
+    applyPublicTheme(payload);
     setAppState({ status: 'ready', payload });
   } catch (e) {
     console.error('公開カレンダーの取得に失敗しました', e);
