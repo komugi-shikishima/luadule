@@ -191,6 +191,20 @@ h1,h2,h3{ margin:0; }
   width:100%; min-height:44px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-sm);
   margin-bottom:8px;
 }
+/* lock screen */
+.lock-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+.lock-card{
+  background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md);
+  padding:32px 24px; width:100%; max-width:360px; text-align:center;
+}
+.lock-icon{ font-size:2rem; margin-bottom:8px; }
+.lock-card h1{ font-size:1.05rem; margin-bottom:16px; }
+.lock-input-row{ display:flex; gap:8px; margin-bottom:12px; }
+.lock-input-row input{
+  flex:1; min-width:0; min-height:44px; padding:8px 10px;
+  border:1px solid var(--border); border-radius:var(--radius-sm); font-size:1rem;
+}
+.lock-submit{ width:100%; }
 .notify-time-row{ display:flex; gap:20px; }
 .notify-time-row label{ display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--text-muted); }
 .notify-time-row select{ min-height:44px; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius-sm); background:#fff; font-size:0.9rem; }
@@ -233,7 +247,12 @@ const STORAGE_KEYS = {
   DATA: 'oshical.data.v1',
   SYNC: 'oshical.sync.v1',
   NOTIFIED: 'oshical.notified.v1',
+  UNLOCK: 'oshical.unlock.v1',
 };
+
+// アプリのロック(玄関の目隠し)。合言葉のSHA-256ハッシュのみ埋め込む。
+// 空文字にするとロックなしで起動する。データ保護そのものは同期の暗号化が担う
+const LOCK_HASH = '713d843e7ce6696676256ece9a8d22c26d1debbc9275309601732f9537452a48';
 
 const CATEGORIES = {
   event:    { kind: 'oshi',     label: 'イベント',   colorVar: '--cat-event',    period: true },
@@ -2044,7 +2063,72 @@ function registerServiceWorker() {
   });
 }
 
+// --- アプリロック(§玄関の目隠し) ---
+async function sha256Hex(text) {
+  const normalized = String(text).normalize('NFC');
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isUnlocked() {
+  if (!LOCK_HASH) return true;
+  try {
+    return localStorage.getItem(STORAGE_KEYS.UNLOCK) === LOCK_HASH;
+  } catch (e) {
+    return false;
+  }
+}
+
+function renderLockScreen(errorMsg) {
+  const root = document.getElementById('app');
+  root.innerHTML = `
+    <div class="lock-screen">
+      <div class="lock-card">
+        <div class="lock-icon">🌸🔒</div>
+        <h1>合言葉を入力してください</h1>
+        <form id="lock-form">
+          <div class="lock-input-row">
+            <input type="password" id="lock-input" autocomplete="off" aria-label="合言葉">
+            <button type="button" class="icon-btn" id="lock-show" aria-label="表示切替">👁</button>
+          </div>
+          ${errorMsg ? `<p class="field-error">${escapeHtml(errorMsg)}</p>` : ''}
+          <button type="submit" class="btn-primary lock-submit">ひらく</button>
+        </form>
+      </div>
+    </div>
+  `;
+  const input = document.getElementById('lock-input');
+  document.getElementById('lock-show').addEventListener('click', () => {
+    input.type = input.type === 'password' ? 'text' : 'password';
+    input.focus();
+  });
+  document.getElementById('lock-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const hash = await sha256Hex((input.value || '').trim());
+      if (hash === LOCK_HASH) {
+        try { localStorage.setItem(STORAGE_KEYS.UNLOCK, LOCK_HASH); } catch (e2) { console.error(e2); }
+        startApp();
+      } else {
+        renderLockScreen('合言葉が違います');
+      }
+    } catch (e3) {
+      console.error('ロック解除処理でエラー', e3);
+      renderLockScreen('エラーが発生しました。再読み込みしてお試しください');
+    }
+  });
+  input.focus();
+}
+
 function init() {
+  if (isUnlocked()) {
+    startApp();
+  } else {
+    renderLockScreen('');
+  }
+}
+
+function startApp() {
   state = loadState();
   const t = parseDateStr(todayStr());
   uiState = {
@@ -2129,6 +2213,8 @@ if (typeof window !== 'undefined') {
     SHIFT_COLOR_DEFAULTS,
     // misc
     escapeHtml,
+    sha256Hex,
+    LOCK_HASH,
     // crypto(非同期)
     encryptData,
     decryptData,
