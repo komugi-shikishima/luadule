@@ -33,6 +33,7 @@
   --shift-3:#c9a8e0;
   --shift-off:#8fbf9f;
   --shift-hw:#f0a860;
+  --memo-color:#d9578a;
   --bg:#fef6f8;
   --bg-top:#fcdee6;
   --bg-bottom:#d6edf4;
@@ -159,6 +160,7 @@ h1,h2,h3{ margin:0; }
 .event-item-memo{ font-size:0.82rem; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .event-item-memo a{ color:var(--secondary-dark); word-break:break-all; }
 .event-item-public-memo{ color:var(--text-muted); }
+.event-item-private-memo{ color:var(--memo-color); font-weight:600; }
 .event-item-actions{ display:flex; gap:4px; flex-shrink:0; }
 .event-item-actions .icon-btn{ min-width:36px; min-height:36px; box-shadow:none; background:#fff; }
 .empty-hint{ color:var(--text-muted); font-size:0.9rem; }
@@ -417,6 +419,7 @@ function getDefaultState() {
       publicEnabled: false, // 公開カレンダー(§12)のON/OFF。設定ごと同期され全端末で揃う
       categoryColors: {}, // カテゴリごとの色の上書き。空文字/未設定=テーマから自動導出
       shiftColors: {},    // シフトごとの色の上書き。空文字/未設定=標準色
+      memoColor: '',      // 自分用メモの文字色。空文字=テーマから自動導出
       updatedAt: 0,
     },
     events: [],
@@ -1263,6 +1266,7 @@ function applyTheme(settings) {
   Object.keys(effective.shift).forEach((code) => {
     root.setProperty(`--shift-${code}`, effective.shift[code]);
   });
+  root.setProperty('--memo-color', (settings && settings.memoColor) || adjustLightness(primary, -30));
 }
 
 /* --- UI(画面の一時的な状態。永続データではない) --- */
@@ -1491,8 +1495,8 @@ function renderDayEventItem(ev) {
       <div class="event-item-main">
         <div class="event-item-title">${escapeHtml(ev.title)}</div>
         <div class="event-item-meta">${escapeHtml(cat.label)}${schedule ? ' ・ ' + escapeHtml(schedule) : ''}</div>
-        ${ev.memo ? `<div class="event-item-memo">${linkifyText(ev.memo)}</div>` : ''}
         ${ev.publicMemo ? `<div class="event-item-memo event-item-public-memo">📢 ${linkifyText(ev.publicMemo)}</div>` : ''}
+        ${ev.memo ? `<div class="event-item-memo event-item-private-memo">${linkifyText(ev.memo)}</div>` : ''}
       </div>
       <div class="event-item-actions">
         <button type="button" class="icon-btn" data-action="edit-event" data-id="${ev.id}" aria-label="編集">✎</button>
@@ -1681,6 +1685,12 @@ function renderColorCustomizeSection(settings) {
       <div class="color-grid">${shiftItems}</div>
       <h4>予定カテゴリ</h4>
       <div class="color-grid">${catItems}</div>
+      <h4>メモ</h4>
+      <div class="color-grid">
+        <label class="color-item">自分用メモ
+          <input type="color" data-color-memo="1" value="${escapeHtml(settings.memoColor || adjustLightness(settings.themePrimary || '#f8b6c8', -30))}">
+        </label>
+      </div>
       <button type="button" class="btn-secondary" data-action="reset-colors">標準の色に戻す</button>
     </section>
   `;
@@ -1840,7 +1850,7 @@ function handleShiftColorChange(code, value) {
 }
 
 function handleResetColors() {
-  updateSettings({ categoryColors: {}, shiftColors: {} });
+  updateSettings({ categoryColors: {}, shiftColors: {}, memoColor: '' });
   showToast('標準の色に戻しました');
 }
 
@@ -2090,6 +2100,10 @@ function onAppChange(e) {
   }
   if (e.target.dataset.colorShift) {
     handleShiftColorChange(e.target.dataset.colorShift, e.target.value);
+    return;
+  }
+  if (e.target.dataset.colorMemo) {
+    updateSettingsQuiet({ memoColor: e.target.value });
     return;
   }
   if (e.target.dataset.draftToggle === 'public' && uiState.editingEvent) {
