@@ -630,31 +630,44 @@ function todayAgenda(targetState, today) {
 }
 
 // buildShareLines: 「今日の予定」画像(Twitter添付用)に載せる行データを組み立てる純関数。
-// 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
-// 第3引数 reminders は computeReminders() の戻り値({ id, milestone, text }[])。
-// このうち milestone==='shift-tomorrow'(自分のシフト=勤務予定)は他人に見せる情報ではないため、
-// Twitter等に添付する画像には絶対に載せない。それ以外のリマインドは text だけを取り出し、最大6件まで含める
-function buildShareLines(agenda, settings, reminders) {
+// 画像は「公開して差し支えない情報」のみで構成する(v29→v30で仕様変更):
+//  - 自分のシフト(勤務予定)は一切含めない(戻り値に shiftLine キー自体を持たない)
+//  - 自分の予定(kind==='personal')・非公開カテゴリ(限定配信members・FB通話call)は items から除外する。
+//    ev.public フラグ(公開カレンダー掲載チェック)は条件にしない(カテゴリ的に見せて良いかどうかのみで絞る)
+//  - 自分用メモ(memo)・公開用メモ(publicMemo)はうっかり公開防止のため絶対に含めない。null安全
+// 第3引数 reminders は computeReminders() の戻り値({ id, eventId, milestone, text }[])。
+// 第4引数 allEvents(state.events)は、リマインドの元イベントが上記の「公開して良い予定」の条件を
+// 満たすかどうかを判定するために使う(r.eventId から元イベントを引く)。milestone==='shift-tomorrow'
+// (自分のシフト)は明示的に除外し、それ以外は元イベントが引けて条件を満たすものだけを残す。
+// allEvents が渡されない(判定できない)場合は安全側に倒してリマインドを空配列にする。最大6件まで含める
+function buildShareLines(agenda, settings, reminders, allEvents) {
   const s = settings || {};
   const a = agenda || { dateStr: '', events: [], shift: null };
   const title = `${s.oshiName || '推し'}カレンダー`;
   const dateLabel = a.dateStr ? formatDateLabel(a.dateStr) : '';
-  const shiftDef = (a.shift && SHIFT_DEFS[a.shift.code]) || null;
-  const shiftLine = shiftDef ? `💼 ${shiftDef.label}${shiftDef.time ? `(${shiftDef.time})` : ''}` : '';
   const effective = computeEffectiveColors(s);
-  const items = (a.events || []).map((ev) => {
-    const cat = CATEGORIES[ev.category] || CATEGORIES.other;
-    const schedule = formatEventScheduleWithDate(ev);
-    const meta = schedule ? `${cat.label}・${schedule}` : cat.label;
-    const color = effective.cat[ev.category] || effective.cat.other;
-    return { title: ev.title, meta, color };
-  });
+  const isSharableEvent = (ev) => !!ev && ev.kind === 'oshi' && PUBLIC_CATEGORIES.indexOf(ev.category) !== -1;
+  const items = (a.events || [])
+    .filter(isSharableEvent)
+    .map((ev) => {
+      const cat = CATEGORIES[ev.category] || CATEGORIES.other;
+      const schedule = formatEventScheduleWithDate(ev);
+      const meta = schedule ? `${cat.label}・${schedule}` : cat.label;
+      const color = effective.cat[ev.category] || effective.cat.other;
+      return { title: ev.title, meta, color };
+    });
   const remindersSource = Array.isArray(reminders) ? reminders : [];
+  const eventsSource = Array.isArray(allEvents) ? allEvents : null;
   const publicReminders = remindersSource
     .filter((r) => r && r.milestone !== 'shift-tomorrow')
+    .filter((r) => {
+      if (!eventsSource) return false;
+      const sourceEvent = eventsSource.find((ev) => ev && ev.id === r.eventId);
+      return isSharableEvent(sourceEvent);
+    })
     .map((r) => r.text)
     .slice(0, 6);
-  return { title, dateLabel, shiftLine, items, reminders: publicReminders };
+  return { title, dateLabel, items, reminders: publicReminders };
 }
 
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
@@ -2326,13 +2339,20 @@ function drawRoundedRect(ctx, x, y, w, h, radius) {
   ctx.closePath();
 }
 
-// stripLeadingReminderEmoji: リマインドテキスト先頭の絵文字(⚠🔔🎪📺🎉)を除去する補助関数。
-// Canvasでの絵文字描画は環境によって豆腐(□)になり得るため、画像に描く直前にだけ除去して使う
-// (バナー表示など他の用途では絵文字付きのテキストをそのまま使い続ける)。
-// 除去後に空文字列になった場合は呼び出し側で描画をスキップすること
-function stripLeadingReminderEmoji(text) {
+// stripEmoji: 文字列中の絵文字・絵文字修飾子をすべて除去する汎用関数。
+// Canvasでの絵文字描画は環境(OS/ブラウザのフォント)によって豆腐(□)になり得るため、
+// 「今日の予定」共有画像に描く全テキストに適用し、絵文字を一切使わない方針にする
+// (バナー表示など画像以外の用途では絵文字付きのテキストをそのまま使い続ける)。
+// 除去対象のUnicode範囲: 絵文字全般・記号装飾・矢印・異体字セレクタ・ZWJ・囲み記号の合成用マーカー。
+// 丸数字(①②③)や〜・・などの日本語で使う記号はこれらの範囲に含まれないため除去されない。
+// 除去後は連続する空白を1つにまとめ前後をtrimする。null/undefined安全(空文字を返す)
+function stripEmoji(text) {
   const str = text === null || text === undefined ? '' : String(text);
-  return str.replace(/^[⚠🔔🎪📺🎉]️?\s*/, '').trim();
+  const stripped = str.replace(
+    /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu,
+    ''
+  );
+  return stripped.replace(/\s+/g, ' ').trim();
 }
 
 // truncateToWidth: ctx.measureTextで幅を測り、収まらない文字列を「…」付きで切り詰める補助関数
@@ -2355,17 +2375,28 @@ function truncateToWidth(ctx, text, maxWidth) {
 
 // handleShareTodayImage: 「今日の予定」をPNG画像として生成し、Twitter添付等のために共有/保存する。
 // Canvas APIのみで自前描画(外部ライブラリ禁止・HTML要素のキャプチャもしない)。
-// 公開用メモ(publicMemo)・自分用メモ(memo)はうっかり公開防止のため画像に一切含めない。
+// 画像には「公開して差し支えない情報」のみを描く:
+//  - 自分のシフト(勤務予定)は一切描画しない(buildShareLinesの戻り値にshiftLine自体が無い)
+//  - 自分の予定(kind==='personal')・非公開カテゴリ(限定配信members・FB通話call)はbuildShareLines側で
+//    itemsから除外済み。公開用メモ(publicMemo)・自分用メモ(memo)はうっかり公開防止のため一切含めない
+//  - 絵文字はCanvasのフォント環境によって豆腐(□)になり得るため一切使わず、描画する全テキストに
+//    stripEmoji()を適用する
 // 描画中に全画面render()は呼ばない
 async function handleShareTodayImage() {
   try {
     const agenda = todayAgenda(state, todayStr());
-    const lines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()));
+    const lines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()), state.events);
+
+    const title = stripEmoji(lines.title);
+    const dateLabel = stripEmoji(lines.dateLabel);
+    const items = lines.items
+      .map((item) => ({ ...item, title: stripEmoji(item.title), meta: stripEmoji(item.meta) }))
+      .filter((item) => item.title.length > 0 || item.meta.length > 0);
 
     // お知らせ(リマインド)行はここで絵文字を除去して確定させる。
-    // 除去後に空文字になった行は描画も高さ計算も対象外にする(先頭絵文字だけの行は現状の文言では発生しないが念のため)
+    // 除去後に空文字になった行は描画も高さ計算も対象外にする
     const noticeRows = lines.reminders
-      .map((text) => stripLeadingReminderEmoji(text))
+      .map((text) => stripEmoji(text))
       .filter((text) => text.length > 0);
     const NOTICE_HEADING_HEIGHT = 22;
     const NOTICE_ROW_HEIGHT = 34;
@@ -2379,14 +2410,13 @@ async function handleShareTodayImage() {
 
     // --- 1パス目: 内容量から先に高さを決める ---
     let height = margin + 24 + 34 + 26;
-    if (lines.shiftLine) height += 30;
     height += 10;
     if (noticeRows.length) {
       height += NOTICE_HEADING_HEIGHT;
       height += noticeRows.length * (NOTICE_ROW_HEIGHT + NOTICE_ROW_GAP);
       height += NOTICE_SECTION_BOTTOM_GAP;
     }
-    height += lines.items.length ? lines.items.length * 58 : 40;
+    height += items.length ? items.length * 58 : 40;
     height += 30 + margin;
     height = Math.max(height, 600);
 
@@ -2415,32 +2445,25 @@ async function handleShareTodayImage() {
     // --- タイトル(推しの名前) ---
     ctx.fillStyle = '#999999';
     ctx.font = '400 15px sans-serif';
-    ctx.fillText(truncateToWidth(ctx, lines.title, innerWidth), innerX, y);
+    ctx.fillText(truncateToWidth(ctx, title, innerWidth), innerX, y);
     y += 34;
 
-    // --- 見出し ---
+    // --- 見出し(絵文字は使わない方針) ---
     ctx.fillStyle = '#333333';
     ctx.font = '700 26px sans-serif';
-    ctx.fillText('📅 今日の予定', innerX, y);
+    ctx.fillText('今日の予定', innerX, y);
     y += 28;
 
     // --- 日付 ---
     ctx.fillStyle = '#666666';
     ctx.font = '400 16px sans-serif';
-    ctx.fillText(lines.dateLabel, innerX, y);
+    ctx.fillText(dateLabel, innerX, y);
     y += 30;
-
-    // --- シフト行 ---
-    if (lines.shiftLine) {
-      ctx.fillStyle = '#555555';
-      ctx.font = '600 16px sans-serif';
-      ctx.fillText(lines.shiftLine, innerX, y);
-      y += 30;
-    }
     y += 10;
 
-    // --- お知らせ(リマインド)セクション: シフト行の下・予定リストの上。
-    // shift-tomorrow(自分のシフト)はbuildShareLinesの時点で既に除外済みなのでここには出てこない ---
+    // --- お知らせ(リマインド)セクション: 日付の下・予定リストの上。
+    // shift-tomorrow(自分のシフト)・自分の予定・非公開カテゴリ由来のリマインドはbuildShareLinesの
+    // 時点で既に除外済みなのでここには出てこない ---
     if (noticeRows.length) {
       ctx.fillStyle = '#777777';
       ctx.font = '700 14px sans-serif';
@@ -2464,15 +2487,15 @@ async function handleShareTodayImage() {
       y += NOTICE_SECTION_BOTTOM_GAP;
     }
 
-    // --- 予定リスト(公開用メモ・自分用メモは描画しない) ---
-    if (!lines.items.length) {
+    // --- 予定リスト(公開用メモ・自分用メモ・自分の予定・非公開カテゴリは描画しない) ---
+    if (!items.length) {
       ctx.fillStyle = '#999999';
       ctx.font = '400 16px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('今日の予定はありません', width / 2, y + 10);
       ctx.textAlign = 'left';
     } else {
-      lines.items.forEach((item) => {
+      items.forEach((item) => {
         ctx.fillStyle = item.color;
         drawRoundedRect(ctx, innerX, y - 16, 5, 40, 4);
         ctx.fill();
@@ -2962,6 +2985,7 @@ if (typeof window !== 'undefined') {
     listLongTermEvents,
     listMonthlyEvents,
     buildShareLines,
+    stripEmoji,
     isDraftDirty,
     buildPublicPayload,
     validateEventInput,
