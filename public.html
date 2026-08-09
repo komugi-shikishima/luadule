@@ -92,7 +92,6 @@ h1,h2,h3{ margin:0; }
 /* 長期予定の一覧(カレンダー上部) */
 .longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
 .longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
-.longterm-range{ font-size:0.8rem; color:var(--text-muted); font-weight:600; }
 .longterm-list{ display:flex; flex-direction:column; gap:6px; }
 .longterm-item{
   display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
@@ -136,6 +135,11 @@ h1,h2,h3{ margin:0; }
 .event-item-memo{ font-size:0.82rem; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .event-item-memo a{ color:var(--secondary-dark); word-break:break-all; }
 .empty-hint{ color:var(--text-muted); font-size:0.9rem; }
+.longterm-collapse{
+  width:100%; min-height:44px; border:none; background:var(--bg); border-radius:var(--radius-sm);
+  padding:10px 12px; text-align:left; font-size:0.9rem; font-weight:700; color:var(--text);
+  margin-bottom:8px;
+}
 
 .state-box{ margin:40px 16px; text-align:center; color:var(--text-muted); }
 .state-box p{ margin:6px 0; }
@@ -391,17 +395,29 @@ function isEventInMonth(ev, year, month) {
     || (compareDates(ev.startDate, monthStart) <= 0 && compareDates(ev.endDate, monthEnd) >= 0);
 }
 
-// longTermEventsInRange: 上部一覧に出す長期予定(表示中の月の前1ヶ月〜後2ヶ月と重なるもの)を返す純関数
-function longTermEventsInRange(events, year, month) {
-  const first = fmtDate(year, month, 1);
-  const rangeStart = addMonths(first, -1);
-  const endBase = parseDateStr(addMonths(first, 2));
-  const rangeEnd = fmtDate(endBase.y, endBase.m, daysInMonth(endBase.y, endBase.m));
+// listLongTermEvents: 上部一覧に出す長期予定を返す純関数。全件返す(月による絞り込みなし)
+function listLongTermEvents(events) {
   return (events || [])
-    .filter((ev) => ev && ev.longTerm === true
-      && compareDates(ev.startDate, rangeEnd) <= 0 && compareDates(ev.endDate, rangeStart) >= 0)
+    .filter((ev) => ev && ev.longTerm === true)
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+}
+
+// eventDomId / findEventByDomId: 公開データのidが空文字の可能性があるため、
+// 空idのイベントは配列内インデックスをフォールバックのdata-idとして使う(open-event側で確実に同じイベントを引く)
+function eventDomId(ev, events) {
+  if (ev && ev.id) return ev.id;
+  const idx = (events || []).indexOf(ev);
+  return `idx:${idx}`;
+}
+
+function findEventByDomId(events, domId) {
+  if (typeof domId !== 'string' || !domId) return null;
+  if (domId.indexOf('idx:') === 0) {
+    const idx = parseInt(domId.slice(4), 10);
+    return Number.isInteger(idx) && events && events[idx] ? events[idx] : null;
+  }
+  return (events || []).find((ev) => ev && ev.id === domId) || null;
 }
 
 // computeSimpleReminders: computeReminders相当の簡易版。期間ものの最終日前日/当日のみ(§12.7)
@@ -427,7 +443,9 @@ let appState = {
   year: 2000,
   month: 1,
   selectedDate: null,
-  sheetOpen: false,
+  selectedEventId: null, // 'event'シートで表示中イベントのdata-id値(idまたは idx:形式)
+  sheet: null, // null | 'day' | 'event'
+  dayLongTermOpen: false, // 日詳細シート内の「期間中の長期予定」折りたたみの開閉
 };
 
 function setAppState(partial) {
@@ -450,7 +468,7 @@ function renderApp() {
     ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderLegend()}
-    ${renderDaySheetOverlay()}
+    ${renderSheetOverlay()}
     <p class="footer-note">この予定は公開設定されたものだけを表示しています。編集はできません。</p>
   `;
 }
@@ -494,17 +512,14 @@ function renderReminderBanner() {
   `;
 }
 
-// renderLongTermSection: カレンダー上部の長期予定一覧。タップで開始日の詳細シートを開く
+// renderLongTermSection: カレンダー上部の長期予定一覧。全件表示(月による絞り込みなし)。
+// タップでその予定の個別詳細シートを開く
 function renderLongTermSection() {
-  const items = longTermEventsInRange(appState.payload.events, appState.year, appState.month);
+  const items = listLongTermEvents(appState.payload.events);
   if (!items.length) return '';
-  const first = fmtDate(appState.year, appState.month, 1);
-  const from = parseDateStr(addMonths(first, -1));
-  const to = parseDateStr(addMonths(first, 2));
-  const rangeLabel = from.y === to.y ? `${from.m}月〜${to.m}月` : `${from.y}年${from.m}月〜${to.y}年${to.m}月`;
   return `
     <section class="longterm-section">
-      <h2 class="longterm-title">📌 長期予定 <span class="longterm-range">(${escapeHtml(rangeLabel)})</span></h2>
+      <h2 class="longterm-title">📌 長期予定一覧</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev)).join('')}
       </div>
@@ -515,8 +530,9 @@ function renderLongTermSection() {
 function renderLongTermItem(ev) {
   const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category] || '#b8b8b8');
   const catLabel = CATEGORY_LABELS[ev.category] || ev.category;
+  const domId = eventDomId(ev, appState.payload.events);
   return `
-    <button type="button" class="longterm-item" data-action="open-day" data-date="${escapeHtml(ev.startDate)}">
+    <button type="button" class="longterm-item" data-action="open-event" data-id="${escapeHtml(domId)}">
       <span class="longterm-bar" style="background:${color}"></span>
       <span class="longterm-body">
         <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
@@ -590,23 +606,59 @@ function renderLegend() {
   `;
 }
 
-function renderDaySheetOverlay() {
-  if (!appState.sheetOpen || !appState.selectedDate) return '';
-  const dateStr = appState.selectedDate;
+function renderSheetOverlay() {
+  if (!appState.sheet) return '';
+  let content = '';
+  if (appState.sheet === 'day' && appState.selectedDate) content = renderDaySheetContent(appState.selectedDate);
+  else if (appState.sheet === 'event') content = renderEventDetailSheetContent();
+  if (!content) return '';
+  return `
+    <div class="sheet-backdrop">
+      <div class="sheet">${content}</div>
+    </div>
+  `;
+}
+
+function renderDaySheetContent(dateStr) {
   const dayEvents = eventsOnDay(appState.payload.events, dateStr)
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || a.title.localeCompare(b.title));
+  const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
+  const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
+  const hasNormal = normalEvents.length > 0;
+  const hasLongTerm = longTermEvents.length > 0;
   return `
-    <div class="sheet-backdrop">
-      <div class="sheet">
-        <div class="sheet-header">
-          <h2>${escapeHtml(formatDateLabel(dateStr))}</h2>
-          <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
-        </div>
-        <div class="sheet-body">
-          ${dayEvents.length ? dayEvents.map((ev) => renderDayEventItem(ev)).join('') : '<p class="empty-hint">公開されている予定はありません</p>'}
-        </div>
-      </div>
+    <div class="sheet-header">
+      <h2>${escapeHtml(formatDateLabel(dateStr))}</h2>
+      <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
+    </div>
+    <div class="sheet-body">
+      ${hasNormal ? normalEvents.map((ev) => renderDayEventItem(ev)).join('') : ''}
+      ${!hasNormal && !hasLongTerm ? '<p class="empty-hint">公開されている予定はありません</p>' : ''}
+      ${hasLongTerm ? renderDayLongTermToggle(longTermEvents) : ''}
+    </div>
+  `;
+}
+
+// renderDayLongTermToggle: 日詳細シート内、通常予定の下に出す長期予定の折りたたみ行(本体アプリと同一仕様)
+function renderDayLongTermToggle(longTermEvents) {
+  const open = appState.dayLongTermOpen === true;
+  return `
+    <button type="button" class="longterm-collapse" data-action="toggle-day-longterm">📌 期間中の長期予定 ${longTermEvents.length}件 ${open ? '▾' : '▸'}</button>
+    ${open ? longTermEvents.map((ev) => renderDayEventItem(ev)).join('') : ''}
+  `;
+}
+
+// renderEventDetailSheetContent: 長期予定一覧タップで開く個別詳細シート
+function renderEventDetailSheetContent() {
+  const ev = findEventByDomId(appState.payload.events, appState.selectedEventId);
+  return `
+    <div class="sheet-header">
+      <h2>予定の詳細</h2>
+      <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
+    </div>
+    <div class="sheet-body">
+      ${ev ? renderDayEventItem(ev) : '<p class="empty-hint">この予定は見つかりませんでした</p>'}
     </div>
   `;
 }
@@ -643,10 +695,16 @@ function handleAction(el) {
       break;
     }
     case 'open-day':
-      setAppState({ sheetOpen: true, selectedDate: el.dataset.date });
+      setAppState({ sheet: 'day', selectedDate: el.dataset.date, dayLongTermOpen: false });
+      break;
+    case 'open-event':
+      setAppState({ sheet: 'event', selectedEventId: el.dataset.id });
+      break;
+    case 'toggle-day-longterm':
+      setAppState({ dayLongTermOpen: !appState.dayLongTermOpen });
       break;
     case 'close-sheet':
-      setAppState({ sheetOpen: false, selectedDate: null });
+      setAppState({ sheet: null, selectedDate: null, selectedEventId: null });
       break;
     default:
       break;
@@ -656,7 +714,7 @@ function handleAction(el) {
 function onAppClick(e) {
   const backdrop = e.target.closest('.sheet-backdrop');
   if (backdrop && e.target === backdrop) {
-    setAppState({ sheetOpen: false, selectedDate: null });
+    setAppState({ sheet: null, selectedDate: null, selectedEventId: null });
     return;
   }
   const actionEl = e.target.closest('[data-action]');
@@ -665,8 +723,8 @@ function onAppClick(e) {
 }
 
 function onAppKeydown(e) {
-  if (e.key === 'Escape' && appState.sheetOpen) {
-    setAppState({ sheetOpen: false, selectedDate: null });
+  if (e.key === 'Escape' && appState.sheet) {
+    setAppState({ sheet: null, selectedDate: null, selectedEventId: null });
   }
 }
 

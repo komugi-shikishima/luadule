@@ -130,7 +130,6 @@ h1,h2,h3{ margin:0; }
 /* 長期予定の一覧(カレンダー上部) */
 .longterm-section{ margin:8px 16px 0; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:10px 12px; }
 .longterm-title{ font-size:0.95rem; font-weight:700; margin-bottom:6px; }
-.longterm-range{ font-size:0.8rem; color:var(--text-muted); font-weight:600; }
 .longterm-list{ display:flex; flex-direction:column; gap:6px; }
 .longterm-item{
   display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
@@ -184,6 +183,11 @@ h1,h2,h3{ margin:0; }
 .add-event-btn{
   width:100%; min-height:44px; border:2px dashed var(--primary); border-radius:var(--radius-md);
   background:#fff; color:var(--primary-dark); font-weight:700; margin-top:4px;
+}
+.longterm-collapse{
+  width:100%; min-height:44px; border:none; background:var(--bg); border-radius:var(--radius-sm);
+  padding:10px 12px; text-align:left; font-size:0.9rem; font-weight:700; color:var(--text);
+  margin-bottom:8px;
 }
 
 /* form */
@@ -555,17 +559,13 @@ function fixDraftLongTerm(draft) {
   return { ...draft, longTerm: false };
 }
 
-// longTermEventsInRange: 上部一覧に出す長期予定を返す純関数。
-// 対象は「表示中の月の前1ヶ月の初日〜後2ヶ月の末日」と期間が重なる longTerm===true のイベント
-function longTermEventsInRange(targetState, year, month) {
+// listLongTermEvents: 上部一覧に出す長期予定を返す純関数。
+// 削除済みでない longTerm===true の全イベントを startDate 昇順(同じなら endDate 昇順)で返す。
+// 表示中の月による絞り込みは行わない
+function listLongTermEvents(targetState) {
   const events = (targetState && Array.isArray(targetState.events)) ? targetState.events : [];
-  const first = fmtDate(year, month, 1);
-  const rangeStart = addMonths(first, -1);
-  const endBase = parseDateStr(addMonths(first, 2));
-  const rangeEnd = endOfMonthStr(endBase.y, endBase.m);
   return events
-    .filter((ev) => ev && !ev.deleted && ev.longTerm === true
-      && compareDates(ev.startDate, rangeEnd) <= 0 && compareDates(ev.endDate, rangeStart) >= 0)
+    .filter((ev) => ev && !ev.deleted && ev.longTerm === true)
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
 }
@@ -1318,12 +1318,14 @@ let uiState = {
   year: 2000,
   month: 1,
   selectedDate: null,
-  sheet: null, // null | 'day' | 'form' | 'settings'
+  selectedEventId: null, // 'event'シート(予定の個別詳細)で表示中のイベントid
+  sheet: null, // null | 'day' | 'form' | 'settings' | 'event'
   editingEvent: null,
   formOriginal: null, // 予定フォームを開いた時点のスナップショット(誤タップで閉じない判定に使う)
   formErrors: {},
   syncMessage: '',
   toast: null,
+  dayLongTermOpen: false, // 日詳細シート内の「期間中の長期予定」折りたたみの開閉
 };
 let toastTimer = null;
 
@@ -1360,7 +1362,7 @@ function requestCloseSheet() {
     showToast('入力中です。閉じるには「キャンセル」を押してください');
     return;
   }
-  setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {} });
+  setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {}, selectedEventId: null });
 }
 
 function createDraftEvent(dateStr) {
@@ -1445,17 +1447,14 @@ function renderReminderBanner() {
   `;
 }
 
-// renderLongTermSection: カレンダー上部の長期予定一覧。タップで開始日の詳細シートを開く
+// renderLongTermSection: カレンダー上部の長期予定一覧。全件表示(月による絞り込みなし)。
+// タップでその予定の個別詳細シートを開く
 function renderLongTermSection() {
-  const items = longTermEventsInRange(state, uiState.year, uiState.month);
+  const items = listLongTermEvents(state);
   if (!items.length) return '';
-  const first = fmtDate(uiState.year, uiState.month, 1);
-  const from = parseDateStr(addMonths(first, -1));
-  const to = parseDateStr(addMonths(first, 2));
-  const rangeLabel = from.y === to.y ? `${from.m}月〜${to.m}月` : `${from.y}年${from.m}月〜${to.y}年${to.m}月`;
   return `
     <section class="longterm-section">
-      <h2 class="longterm-title">📌 長期予定 <span class="longterm-range">(${escapeHtml(rangeLabel)})</span></h2>
+      <h2 class="longterm-title">📌 長期予定一覧</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev)).join('')}
       </div>
@@ -1466,7 +1465,7 @@ function renderLongTermSection() {
 function renderLongTermItem(ev) {
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
   return `
-    <button type="button" class="longterm-item" data-action="open-day" data-date="${escapeHtml(ev.startDate)}">
+    <button type="button" class="longterm-item" data-action="open-event" data-id="${escapeHtml(ev.id)}">
       <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
       <span class="longterm-body">
         <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
@@ -1546,6 +1545,7 @@ function renderSheetOverlay() {
   if (uiState.sheet === 'day') content = renderDaySheet();
   else if (uiState.sheet === 'form') content = renderEventFormSheet();
   else if (uiState.sheet === 'settings') content = renderSettingsSheet();
+  else if (uiState.sheet === 'event') content = renderEventDetailSheet();
   return `
     <div class="sheet-backdrop">
       <div class="sheet" data-sheet="${uiState.sheet}">${content}</div>
@@ -1558,7 +1558,11 @@ function renderDaySheet() {
   const dayEvents = eventsOnDay(state, dateStr)
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || a.title.localeCompare(b.title));
+  const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
+  const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
   const shift = state.shifts[dateStr];
+  const hasNormal = normalEvents.length > 0;
+  const hasLongTerm = longTermEvents.length > 0;
   return `
     <div class="sheet-header">
       <h2>${escapeHtml(formatDateLabel(dateStr))}</h2>
@@ -1571,9 +1575,34 @@ function renderDaySheet() {
       </section>
       <section class="day-events">
         <h3>予定</h3>
-        ${dayEvents.length ? dayEvents.map((ev) => renderDayEventItem(ev)).join('') : '<p class="empty-hint">予定はありません</p>'}
+        ${hasNormal ? normalEvents.map((ev) => renderDayEventItem(ev)).join('') : ''}
+        ${!hasNormal && !hasLongTerm ? '<p class="empty-hint">予定はありません</p>' : ''}
+        ${hasLongTerm ? renderDayLongTermToggle(longTermEvents) : ''}
         <button type="button" class="add-event-btn" data-action="add-event" data-date="${dateStr}">+ 予定を追加</button>
       </section>
+    </div>
+  `;
+}
+
+// renderDayLongTermToggle: 日詳細シート内、通常予定の下に出す長期予定の折りたたみ行
+function renderDayLongTermToggle(longTermEvents) {
+  const open = uiState.dayLongTermOpen === true;
+  return `
+    <button type="button" class="longterm-collapse" data-action="toggle-day-longterm">📌 期間中の長期予定 ${longTermEvents.length}件 ${open ? '▾' : '▸'}</button>
+    ${open ? longTermEvents.map((ev) => renderDayEventItem(ev)).join('') : ''}
+  `;
+}
+
+// renderEventDetailSheet: 長期予定一覧タップで開く個別詳細シート。既存の日詳細カードを1件分再利用する
+function renderEventDetailSheet() {
+  const ev = state.events.find((x) => x.id === uiState.selectedEventId && !x.deleted);
+  return `
+    <div class="sheet-header">
+      <h2>予定の詳細</h2>
+      <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
+    </div>
+    <div class="sheet-body">
+      ${ev ? renderDayEventItem(ev) : '<p class="empty-hint">この予定は見つかりませんでした</p>'}
     </div>
   `;
 }
@@ -2006,7 +2035,7 @@ function handleSaveEvent() {
     };
     setState((prev) => ({ events: [...prev.events, newEvent] }));
   }
-  setUiState({ sheet: 'day', editingEvent: null, formOriginal: null, formErrors: {} });
+  setUiState({ sheet: 'day', editingEvent: null, formOriginal: null, formErrors: {}, selectedEventId: null });
 }
 
 function handleDeleteEvent(id) {
@@ -2017,6 +2046,10 @@ function handleDeleteEvent(id) {
   setState((prev) => ({
     events: prev.events.map((e2) => (e2.id === id ? { ...e2, deleted: true, updatedAt: Date.now() } : e2)),
   }));
+  // 予定の個別詳細シートから削除した場合は、削除済みイベントを表示し続けないようシートを閉じる
+  if (uiState.sheet === 'event') {
+    setUiState({ sheet: null, selectedEventId: null });
+  }
 }
 
 function handleSetShift(code) {
@@ -2118,7 +2151,7 @@ function handleAction(el) {
       break;
     case 'cancel-form':
       // キャンセルボタンは入力中でも常に閉じられる唯一の出口
-      setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {} });
+      setUiState({ sheet: null, editingEvent: null, formOriginal: null, formErrors: {}, selectedEventId: null });
       break;
     case 'prev-month': {
       const { y, m } = parseDateStr(addMonths(fmtDate(uiState.year, uiState.month, 1), -1));
@@ -2139,7 +2172,15 @@ function handleAction(el) {
       handleManualSync();
       break;
     case 'open-day':
-      setUiState({ sheet: 'day', selectedDate: el.dataset.date });
+      setUiState({ sheet: 'day', selectedDate: el.dataset.date, dayLongTermOpen: false });
+      break;
+    case 'open-event': {
+      const ev = state.events.find((x) => x.id === el.dataset.id);
+      if (ev) setUiState({ sheet: 'event', selectedEventId: ev.id, selectedDate: ev.startDate });
+      break;
+    }
+    case 'toggle-day-longterm':
+      setUiState({ dayLongTermOpen: !uiState.dayLongTermOpen });
       break;
     case 'add-event': {
       const dateStr = el.dataset.date || uiState.selectedDate || todayStr();
@@ -2379,11 +2420,14 @@ function startApp() {
     year: t.y,
     month: t.m,
     selectedDate: null,
+    selectedEventId: null,
     sheet: null,
     editingEvent: null,
+    formOriginal: null,
     formErrors: {},
     syncMessage: '',
     toast: null,
+    dayLongTermOpen: false,
   };
   attachEventListeners();
   fullRender();
@@ -2440,7 +2484,7 @@ if (typeof window !== 'undefined') {
     fixDraftEndDate,
     fixDraftPublic,
     fixDraftLongTerm,
-    longTermEventsInRange,
+    listLongTermEvents,
     isDraftDirty,
     buildPublicPayload,
     validateEventInput,
