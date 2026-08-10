@@ -42,14 +42,22 @@ button{ font-family:inherit; font-size:1rem; cursor:pointer; }
 h1,h2,h3{ margin:0; }
 #app{ max-width:920px; margin:0 auto; padding-bottom:48px; }
 
-.app-header{ padding:16px 16px 8px; }
+.app-header{ padding:16px 16px 4px; }
 .header-top{ display:flex; align-items:center; justify-content:space-between; }
 .header-top h1{ font-size:1.2rem; font-weight:700; }
 .header-badge{
   font-size:0.72rem; color:#fff; background:var(--primary-dark); padding:2px 10px; border-radius:12px;
   white-space:nowrap;
 }
-.header-nav{ display:flex; align-items:center; gap:8px; margin-top:12px; flex-wrap:wrap; }
+/* 操作行(月移動・今日・凡例)はスクロールしても画面上部に貼り付く(v35)。
+   #app直下に置いてあるのでページ全体でstickyが効く。
+   bodyの背景グラデーションはfixed指定=画面基準なので、画面上端の色である
+   --bg-top を敷けば背景と自然につながる。sheet-backdrop(z-index:50)より必ず下にする */
+.nav-bar{
+  position:sticky; top:0; z-index:5; background:var(--bg-top);
+  padding:8px 16px 10px; box-shadow:0 2px 6px rgba(120,90,90,0.10);
+}
+.header-nav{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .nav-btn{
   min-width:44px; min-height:44px; border:none; background:#fff; border-radius:var(--radius-md);
   box-shadow:var(--shadow-sm); font-size:1rem;
@@ -103,11 +111,11 @@ h1,h2,h3{ margin:0; }
 .longterm-item-title{ font-size:0.92rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .longterm-item-schedule{ font-size:0.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
 
-.legend{ margin:0 16px 16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:12px 16px; }
-.legend h3{ font-size:0.85rem; color:var(--text-muted); margin-bottom:8px; }
-.legend-items{ display:flex; flex-wrap:wrap; gap:12px; }
-.legend-item{ display:flex; align-items:center; gap:6px; font-size:0.82rem; }
-.legend-swatch{ width:14px; height:14px; border-radius:4px; display:inline-block; }
+/* カテゴリの凡例(v35でページ下部からヘッダーの操作行へ移動)。
+   「今日」ボタンの右隣に置き、幅が足りなければ次の行へ折り返す */
+.legend-inline{ display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; flex:1 1 auto; min-width:0; }
+.legend-item{ display:flex; align-items:center; gap:5px; font-size:0.7rem; color:var(--text); white-space:nowrap; }
+.legend-swatch{ width:10px; height:10px; border-radius:3px; display:inline-block; flex-shrink:0; }
 
 .sheet-backdrop{
   position:fixed; inset:0; background:rgba(60,40,40,0.35); display:flex; align-items:flex-end;
@@ -597,11 +605,11 @@ function renderApp() {
   if (appState.status === 'error') return renderStateBox(appState.errorMessage, true);
   return `
     ${renderHeader()}
+    ${renderNavBar()}
     ${renderTodaySection()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
     ${renderCalendar()}
-    ${renderLegend()}
     ${renderSheetOverlay()}
     <p class="footer-note">この予定は公開設定されたものだけを表示しています。編集はできません。</p>
   `;
@@ -618,20 +626,33 @@ function renderStateBox(message, isError) {
 
 function renderHeader() {
   const oshiName = (appState.payload && appState.payload.oshiName) || '推し';
-  const monthLabel = formatMonthLabel(appState.year, appState.month);
   return `
     <header class="app-header">
       <div class="header-top">
         <h1>${escapeHtml(oshiName)}カレンダー</h1>
         <span class="header-badge">公開ページ</span>
       </div>
+    </header>
+  `;
+}
+
+// renderNavBar: 月移動・今日ボタン・カテゴリの凡例をまとめた操作行(v35)。
+// スクロールしても画面上部に貼り付くよう、ヘッダーの中ではなく#app直下の要素として描画する
+// (position:stickyは親要素の範囲でしか効かないため、ヘッダー内に置くとヘッダーごと流れて消える)。
+// 凡例は「初見の人がカレンダーを見た瞬間に色の意味が分かる」ように、
+// ページ下部からこの位置(今日ボタンの右隣)へ移動した
+function renderNavBar() {
+  const monthLabel = formatMonthLabel(appState.year, appState.month);
+  return `
+    <div class="nav-bar">
       <div class="header-nav">
         <button type="button" class="nav-btn" data-action="prev-month" aria-label="前の月">◀</button>
         <span class="month-label">${escapeHtml(monthLabel)}</span>
         <button type="button" class="nav-btn" data-action="next-month" aria-label="次の月">▶</button>
         <button type="button" class="today-btn" data-action="go-today">今日</button>
+        ${renderLegend()}
       </div>
-    </header>
+    </div>
   `;
 }
 
@@ -764,18 +785,16 @@ function renderChip(ev) {
   return `<div class="chip" style="background:${color}">${escapeHtml(ev.title)}</div>`;
 }
 
+// renderLegend: カテゴリの色の凡例。v35で操作行(renderNavBar)の中へ移動し、
+// 小さな色丸+カテゴリ名を折り返しで並べるコンパクトな見た目にした。
+// 実際に表示する色は公開ペイロードのcolors、つまり作者が設定した色をsafeColorで検証して使う
 function renderLegend() {
-  const colors = appState.payload.colors;
+  const colors = (appState.payload && appState.payload.colors) || {};
   const items = ALLOWED_CATEGORIES.map((cat) => {
     const color = safeColor(colors[cat], DEFAULT_COLORS[cat]);
     return `<span class="legend-item"><span class="legend-swatch" style="background:${color}"></span>${escapeHtml(CATEGORY_LABELS[cat])}</span>`;
   }).join('');
-  return `
-    <div class="legend">
-      <h3>カテゴリ</h3>
-      <div class="legend-items">${items}</div>
-    </div>
-  `;
+  return `<div class="legend-inline" aria-label="カテゴリの色">${items}</div>`;
 }
 
 function renderSheetOverlay() {

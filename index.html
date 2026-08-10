@@ -34,7 +34,11 @@
   --shift-2:#7cc3d8;
   --shift-3:#c9a8e0;
   --shift-off:#8fbf9f;
-  --shift-hw:#f0a860;
+  --shift-paid:#bcd9c5; /* 有給。休みの緑を白と混ぜて淡くした色(v35) */
+  --shift-hw:#f0a860;   /* 旧「休出」。細分化前のデータ用に残している */
+  --shift-hw1:#f0a860;
+  --shift-hw2:#f0a860;
+  --shift-hw3:#f0a860;
   --memo-color:#d9578a;
   --today-border:#e08aa0;
   --bg:#fef6f8;
@@ -112,12 +116,17 @@ h1,h2,h3{ margin:0; }
 .day-num{ font-size:0.85rem; font-weight:600; }
 .shift-badge{
   font-size:0.62rem; font-weight:700; padding:1px 5px; border-radius:8px; color:#fff; background:var(--secondary-dark);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; min-width:0;
 }
 .shift-badge.shift-1{ background:var(--shift-1); }
 .shift-badge.shift-2{ background:var(--shift-2); }
 .shift-badge.shift-3{ background:var(--shift-3); }
 .shift-badge.shift-off{ background:var(--shift-off); }
+.shift-badge.shift-paid{ background:var(--shift-paid); color:#3a2e2e; }
 .shift-badge.shift-hw{ background:var(--shift-hw); }
+.shift-badge.shift-hw1{ background:var(--shift-hw1); }
+.shift-badge.shift-hw2{ background:var(--shift-hw2); }
+.shift-badge.shift-hw3{ background:var(--shift-hw3); }
 .chip-list{ margin-top:2px; display:flex; flex-direction:column; gap:2px; overflow:hidden; }
 .chip{
   font-size:0.62rem; color:#fff; padding:1px 4px; border-radius:5px; white-space:nowrap;
@@ -231,6 +240,10 @@ h1,h2,h3{ margin:0; }
 .btn-primary{ background:var(--primary-dark); color:#fff; }
 .btn-secondary{ background:#fff; border:1px solid var(--border); color:var(--text); }
 .today-share-btn{ width:100%; margin-top:10px; }
+.share-category-list{ display:flex; flex-direction:column; gap:8px; }
+.share-category-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.share-category-count{ font-size:12px; color:var(--text-muted); }
+.share-note{ margin:12px 0 0; font-size:12px; color:var(--muted); line-height:1.6; }
 
 /* settings */
 .settings-section{ border-bottom:1px solid var(--border); padding-bottom:14px; }
@@ -318,16 +331,31 @@ const CATEGORIES = {
   personal: { kind: 'personal', label: '自分の予定', colorVar: '--cat-personal', period: true },
 };
 
+// SHIFT_DEFS: シフトの定義。badgeはカレンダーのマスに出す短縮表記(未指定ならlabelをそのまま使う)。
+// v35で「有給(paid)」と「休出①②③(hw1/hw2/hw3)」を追加した。
+// **旧コード 'hw'(細分化前の休出)は消さずに残す**。既に登録済みの日がどのシフトだったかは
+// 復元できないため、過去のデータは「休出」のまま表示し、選択ボタン(SHIFT_CODE_ORDER)からのみ外す。
 const SHIFT_DEFS = {
   '1':  { label: '①', time: '7:00–15:00' },
   '2':  { label: '②', time: '15:00–22:15' },
   '3':  { label: '③', time: '22:15–翌7:00' },
   off:  { label: '休み', time: '' },
+  paid: { label: '有給', time: '' },
   hw:   { label: '休出', time: '' },
+  hw1:  { label: '休出①', time: '7:00–15:00',   badge: '出①' },
+  hw2:  { label: '休出②', time: '15:00–22:15',  badge: '出②' },
+  hw3:  { label: '休出③', time: '22:15–翌7:00', badge: '出③' },
 };
 
-const SHIFT_CODE_ORDER = ['1', '2', '3', 'off', 'hw'];
-const SHIFT_COLOR_DEFAULTS = { '1': '#e893ac', '2': '#7cc3d8', '3': '#c9a8e0', off: '#8fbf9f', hw: '#f0a860' };
+// SHIFT_CODE_ORDER: 日詳細のシフト選択ボタンと、設定画面の色カスタマイズに出す順番。
+// 旧コード 'hw' は含めない(新規に選ばせない。既存データの表示には SHIFT_DEFS 側で対応する)
+const SHIFT_CODE_ORDER = ['1', '2', '3', 'off', 'paid', 'hw1', 'hw2', 'hw3'];
+// 休出①②③は3つとも従来の休出色(オレンジ)を既定にする。有給は休みの緑を淡くした色
+const SHIFT_COLOR_DEFAULTS = {
+  '1': '#e893ac', '2': '#7cc3d8', '3': '#c9a8e0',
+  off: '#8fbf9f', paid: '#bcd9c5',
+  hw: '#f0a860', hw1: '#f0a860', hw2: '#f0a860', hw3: '#f0a860',
+};
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3, 'shift-tomorrow': 4 };
 const GIST_DESCRIPTION = 'oshical-sync-v1';
@@ -338,6 +366,9 @@ const GIST_FILENAME = 'oshical.enc.json';
 // (buildPublicPayload/fixDraftPublicのkind==='oshi'+public===true判定は変更していない)。
 // callは絶対にここへ追加しないこと
 const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'other', 'anniversary'];
+// 共有画像1枚に載せる予定の最大件数(v34)。これを超えると「ほか◯件」にまとめる。
+// 画像が縦に長くなりすぎると、端末によってはCanvasのPNG化(toBlob)が失敗するため
+const SHARE_MAX_ITEMS = 24;
 const GIST_PUBLIC_DESCRIPTION = 'oshical-public-v1';
 const GIST_PUBLIC_FILENAME = 'oshical-public.json';
 const GITHUB_API = 'https://api.github.com';
@@ -650,6 +681,18 @@ function todayAgenda(targetState, today) {
   return { dateStr: today, events, shift };
 }
 
+// isSharableEvent: 共有画像に載せてよい予定かどうかを判定する純関数(v34で共通化)。
+// 「今日の予定」画像・「販売期間まとめ」画像の両方がこの1箇所の判定を使う。
+//  - 推し種別(kind==='oshi')かつ公開可カテゴリ(PUBLIC_CATEGORIES)のみ許可する。
+//    自分の予定(personal)・FB通話(call)はこの時点で落ちる
+//  - 限定配信(members)だけは ev.public===true(ユーザーが公開チェックを入れたもの)に限る
+// null/undefined安全(falseを返す)
+function isSharableEvent(ev) {
+  if (!ev || ev.kind !== 'oshi' || PUBLIC_CATEGORIES.indexOf(ev.category) === -1) return false;
+  if (ev.category === 'members' && ev.public !== true) return false;
+  return true;
+}
+
 // buildShareLines: 「今日の予定」画像(Twitter添付用)に載せる行データを組み立てる純関数。
 // 画像は「公開して差し支えない情報」のみで構成する(v29→v30で仕様変更、v31で限定配信の扱いを追加変更):
 //  - 自分のシフト(勤務予定)は一切含めない(戻り値に shiftLine キー自体を持たない)
@@ -672,11 +715,6 @@ function buildShareLines(agenda, settings, reminders, allEvents) {
   const title = `${s.oshiName || '推し'}カレンダー`;
   const dateLabel = a.dateStr ? formatDateLabel(a.dateStr) : '';
   const effective = computeEffectiveColors(s);
-  const isSharableEvent = (ev) => {
-    if (!ev || ev.kind !== 'oshi' || PUBLIC_CATEGORIES.indexOf(ev.category) === -1) return false;
-    if (ev.category === 'members' && ev.public !== true) return false;
-    return true;
-  };
   const items = (a.events || [])
     .filter(isSharableEvent)
     .map((ev) => {
@@ -698,6 +736,74 @@ function buildShareLines(agenda, settings, reminders, allEvents) {
     .map((r) => r.text)
     .slice(0, 6);
   return { title, dateLabel, items, reminders: publicReminders };
+}
+
+// listOnSaleShareEvents: 「販売期間まとめ」画像に載せる予定を返す純関数(v34)。
+// 「📌 販売期間中 一覧」と同じ母集団(longTerm===true・endDateが今日以降)から、
+// さらに isSharableEvent を通したものだけを締切日(endDate)昇順・同日ならstartDate昇順で返す。
+// category に 'all' 以外を渡すとそのカテゴリだけに絞る。
+// 購入済みフラグ(ev.purchased)は自分専用の情報なので、絞り込みにも表示にも一切使わない
+function listOnSaleShareEvents(targetState, today, category) {
+  const events = (targetState && Array.isArray(targetState.events)) ? targetState.events : [];
+  return events
+    .filter((ev) => ev && !ev.deleted && ev.longTerm === true)
+    .filter((ev) => !today || compareDates(ev.endDate, today) >= 0)
+    .filter(isSharableEvent)
+    .filter((ev) => !category || category === 'all' || ev.category === category)
+    .slice()
+    .sort((a, b) => compareDates(a.endDate, b.endDate) || compareDates(a.startDate, b.startDate));
+}
+
+// listOnSaleShareCategories: 画像にできるカテゴリの選択肢を返す純関数(v34)。
+// いま共有できる販売期間の予定に実際に含まれるカテゴリだけを CATEGORIES の定義順で返し、
+// 2種類以上あるときだけ先頭に 'all'(すべてまとめて1枚)を足す。
+// 戻り値: [{ key, label, count }]。0件のときは空配列
+function listOnSaleShareCategories(targetState, today) {
+  const events = listOnSaleShareEvents(targetState, today, 'all');
+  if (!events.length) return [];
+  const order = Object.keys(CATEGORIES);
+  const options = order
+    .filter((key) => events.some((ev) => ev.category === key))
+    .map((key) => ({
+      key,
+      label: CATEGORIES[key].label,
+      count: events.filter((ev) => ev.category === key).length,
+    }));
+  if (options.length > 1) {
+    return [{ key: 'all', label: 'すべて', count: events.length }].concat(options);
+  }
+  return options;
+}
+
+// buildOnSaleShareLines: 「販売期間まとめ」画像に載せる行データを組み立てる純関数(v34)。
+// buildShareLines と同じ形({ title, dateLabel, heading, emptyMessage, items, reminders })を返すので、
+// 描画は renderShareCanvas をそのまま流用できる。
+// 見出しはカテゴリ名から作る(イベント→「イベント期間」/ グッズ販売→「グッズ販売期間」/
+// チケット販売→「チケット販売期間」/ すべて→「販売期間まとめ」)。
+// items の meta は期間表記。'all' のときだけカテゴリ名を頭に付ける。
+// 自分用メモ・公開用メモ・購入済みフラグは「今日の予定」画像と同じく一切含めない
+function buildOnSaleShareLines(targetState, today, category) {
+  const s = (targetState && targetState.settings) || {};
+  const cat = category && category !== 'all' ? CATEGORIES[category] : null;
+  const title = `${s.oshiName || '推し'}カレンダー`;
+  const dateLabel = today ? `${formatDateLabel(today)} 時点` : '';
+  const heading = cat ? `${cat.label}期間` : '販売期間まとめ';
+  const effective = computeEffectiveColors(s);
+  const all = listOnSaleShareEvents(targetState, today, category);
+  const items = all.slice(0, SHARE_MAX_ITEMS).map((ev) => {
+    const evCat = CATEGORIES[ev.category] || CATEGORIES.other;
+    const schedule = formatEventScheduleWithDate(ev);
+    return {
+      title: ev.title,
+      meta: cat ? schedule : (schedule ? `${evCat.label}・${schedule}` : evCat.label),
+      color: effective.cat[ev.category] || effective.cat.other,
+    };
+  });
+  // 画像が縦に長くなりすぎると端末によってはPNG化に失敗するため件数を打ち切り、残りは件数だけ伝える
+  if (all.length > SHARE_MAX_ITEMS) {
+    items.push({ title: `ほか${all.length - SHARE_MAX_ITEMS}件`, meta: '', color: effective.cat.other });
+  }
+  return { title, dateLabel, heading, emptyMessage: '販売中のものはありません', items, reminders: [] };
 }
 
 // isEventInMonth: 予定が指定した年月に重なるかを判定する純関数。
@@ -1682,7 +1788,7 @@ function renderTodaySection() {
       ${shiftRow}
       ${reminderHtml}
       ${body}
-      <button type="button" class="btn-secondary today-share-btn" data-action="share-today-image">📷 画像を保存</button>
+      <button type="button" class="btn-secondary today-share-btn" data-action="share-today-image">今日の予定をXで共有</button>
     </section>
   `;
 }
@@ -1715,12 +1821,19 @@ function renderMonthlyEventSection() {
 function renderLongTermSection() {
   const items = listLongTermEvents(state, todayStr());
   if (!items.length) return '';
+  // 共有ボタンは「画像にできる予定」が1件以上あるときだけ出す
+  // (自分の予定・FB通話・公開チェックなしの限定配信しか無い場合は出さない)
+  const shareOptions = listOnSaleShareCategories(state, todayStr());
+  const shareBtn = shareOptions.length
+    ? `<button type="button" class="btn-secondary today-share-btn" data-action="share-onsale-image">販売期間をXで共有</button>`
+    : '';
   return `
     <section class="longterm-section">
       <h2 class="longterm-title">📌 販売期間中 一覧（締切日が近い順）</h2>
       <div class="longterm-list">
         ${items.map((ev) => renderLongTermItem(ev, { showPurchased: true })).join('')}
       </div>
+      ${shareBtn}
     </section>
   `;
 }
@@ -1816,7 +1929,8 @@ function renderDayCell(cell, today) {
 function renderShiftBadge(shift) {
   const def = SHIFT_DEFS[shift.code];
   if (!def) return '';
-  return `<span class="shift-badge shift-${escapeHtml(shift.code)}">${escapeHtml(def.label)}</span>`;
+  // カレンダーのマスは幅が狭いので、長いラベルは短縮表記(badge)を使う
+  return `<span class="shift-badge shift-${escapeHtml(shift.code)}">${escapeHtml(def.badge || def.label)}</span>`;
 }
 
 function renderChip(ev) {
@@ -1831,6 +1945,7 @@ function renderSheetOverlay() {
   else if (uiState.sheet === 'form') content = renderEventFormSheet();
   else if (uiState.sheet === 'settings') content = renderSettingsSheet();
   else if (uiState.sheet === 'event') content = renderEventDetailSheet();
+  else if (uiState.sheet === 'share-onsale') content = renderShareOnSaleSheet();
   return `
     <div class="sheet-backdrop">
       <div class="sheet" data-sheet="${uiState.sheet}">${content}</div>
@@ -1889,6 +2004,30 @@ function renderEventDetailSheet() {
     <div class="sheet-body">
       ${ev ? renderDayEventItem(ev) : '<p class="empty-hint">この予定は見つかりませんでした</p>'}
     </div>
+  `;
+}
+
+// renderShareOnSaleSheet: 「販売期間まとめ」画像にするカテゴリを選ぶシート(v34)。
+// いま画像にできる予定に含まれるカテゴリだけをボタンにする(件数付き)。
+// 2種類以上あるときは先頭に「すべて」が入る(listOnSaleShareCategoriesが付ける)
+function renderShareOnSaleSheet() {
+  const options = listOnSaleShareCategories(state, todayStr());
+  const body = options.length
+    ? `<div class="share-category-list">
+        ${options.map((opt) => `
+          <button type="button" class="btn-secondary share-category-btn" data-action="share-onsale-image" data-category="${escapeHtml(opt.key)}">
+            ${escapeHtml(opt.label)}<span class="share-category-count">${opt.count}件</span>
+          </button>
+        `).join('')}
+      </div>
+      <p class="share-note">画像を作ってXの投稿画面を開きます。自分の予定・シフト・メモは画像に入りません。</p>`
+    : '<p class="empty-hint">画像にできる販売期間の予定がありません</p>';
+  return `
+    <div class="sheet-header">
+      <h2>どの期間を画像にしますか？</h2>
+      <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
+    </div>
+    <div class="sheet-body">${body}</div>
   `;
 }
 
@@ -2382,19 +2521,28 @@ function drawRoundedRect(ctx, x, y, w, h, radius) {
   ctx.closePath();
 }
 
+// SHARE_KEEP_SYMBOLS: 絵文字の範囲に入っているが、日本語のタイトルで普通に使われるので
+// 画像から消してはいけない記号(v34)。「★限定★」が「限定」に、「8/1→8/10」が「8/1 8/10」に
+// 化けるのを防ぐためのホワイトリスト。ここに無い絵文字はstripEmojiで除去される
+const SHARE_KEEP_SYMBOLS = ['★', '☆', '♪', '♫', '♬', '♡', '♥', '♢', '♦', '←', '→', '↑', '↓', '✓', '✔', '☑'];
+
 // stripEmoji: 文字列中の絵文字・絵文字修飾子をすべて除去する汎用関数。
 // Canvasでの絵文字描画は環境(OS/ブラウザのフォント)によって豆腐(□)になり得るため、
 // 「今日の予定」共有画像に描く全テキストに適用し、絵文字を一切使わない方針にする
 // (バナー表示など画像以外の用途では絵文字付きのテキストをそのまま使い続ける)。
-// 除去対象のUnicode範囲: 絵文字全般・記号装飾・矢印・異体字セレクタ・ZWJ・囲み記号の合成用マーカー。
-// 丸数字(①②③)や〜・・などの日本語で使う記号はこれらの範囲に含まれないため除去されない。
+// 除去対象のUnicode範囲: 絵文字全般・記号装飾・矢印・時計記号・異体字セレクタ・ZWJ・囲み記号の合成用マーカー。
+// v34で開始位置を U+1F300 から U+1F000 に広げ(🈳🈵などの囲み漢字の絵文字)、⏰⌚のU+2300台も追加した。
+// 丸数字(①②③ = U+2460〜)や〜・・などの日本語で使う記号、漢字(U+4E00〜)はこれらの範囲に
+// 含まれないため除去されない。範囲内でもタイトルによく使う ★☆♪♡←→✓ などは
+// SHARE_KEEP_SYMBOLS に入れて残す(v34。ユーザーが付けた装飾を勝手に消さないため)。
 // 除去後は連続する空白を1つにまとめ前後をtrimする。null/undefined安全(空文字を返す)
 function stripEmoji(text) {
   const str = text === null || text === undefined ? '' : String(text);
-  const stripped = str.replace(
-    /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu,
-    ''
-  );
+  // 1文字ずつ(サロゲートペアを壊さないようArray.fromで)見て、ホワイトリストの記号だけ残す
+  const emojiRe = /[\u{1F000}-\u{1FAFF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/u;
+  const stripped = Array.from(str)
+    .filter((ch) => SHARE_KEEP_SYMBOLS.indexOf(ch) !== -1 || !emojiRe.test(ch))
+    .join('');
   return stripped.replace(/\s+/g, ' ').trim();
 }
 
@@ -2428,6 +2576,10 @@ function truncateToWidth(ctx, text, maxWidth) {
 //   boxes      = 各要素の { label, y, height } のダンプ(レイアウト検証用。重なり確認に使う)
 function renderShareCanvas(ctx, lines, layout, measureOnly) {
   const { title, dateLabel, noticeRows, items } = lines;
+  // heading / emptyMessage は「今日の予定」画像と「販売期間まとめ」画像で文言を差し替えるための項目(v34)。
+  // 未指定なら従来通り「今日の予定」用の文言になる(既存の呼び出し・テストとの互換のため)
+  const heading = lines.heading || '今日の予定';
+  const emptyMessage = lines.emptyMessage || '今日の予定はありません';
   const { width, margin, innerX, innerWidth, primary } = layout;
 
   const boxes = [];
@@ -2476,7 +2628,7 @@ function renderShareCanvas(ctx, lines, layout, measureOnly) {
   draw(() => {
     ctx.fillStyle = '#333333';
     ctx.font = '700 26px sans-serif';
-    ctx.fillText('今日の予定', innerX, y);
+    ctx.fillText(truncateToWidth(ctx, heading, innerWidth), innerX, y);
   });
   recordBox('heading', y, HEADING_HEIGHT);
   y += HEADING_HEIGHT + GAP_HEADING_TO_DATE;
@@ -2530,7 +2682,7 @@ function renderShareCanvas(ctx, lines, layout, measureOnly) {
       ctx.fillStyle = '#999999';
       ctx.font = '400 16px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('今日の予定はありません', width / 2, messageY);
+      ctx.fillText(emptyMessage, width / 2, messageY);
       ctx.textAlign = 'left';
     });
     recordBox('empty-message', messageY, EMPTY_MESSAGE_HEIGHT);
@@ -2580,102 +2732,203 @@ function renderShareCanvas(ctx, lines, layout, measureOnly) {
   return { height, cardHeight, boxes };
 }
 
-// handleShareTodayImage: 「今日の予定」をPNG画像として生成し、Twitter添付等のために共有/保存する。
-// Canvas APIのみで自前描画(外部ライブラリ禁止・HTML要素のキャプチャもしない)。
+// sanitizeShareLines: renderShareCanvasに渡す直前に、描画する全テキストから絵文字を除去する。
+// Canvasの絵文字描画は環境によって豆腐(□)になり得るため、画像に載る文字列は必ずここを通す。
+// 除去後に空文字になった行は描画も高さ計算も対象外にする
+function sanitizeShareLines(rawLines) {
+  return {
+    title: stripEmoji(rawLines.title),
+    dateLabel: stripEmoji(rawLines.dateLabel),
+    heading: stripEmoji(rawLines.heading || '今日の予定'),
+    emptyMessage: stripEmoji(rawLines.emptyMessage || '今日の予定はありません'),
+    noticeRows: (rawLines.reminders || [])
+      .map((text) => stripEmoji(text))
+      .filter((text) => text.length > 0),
+    // タイトルが絵文字だけだった予定は、タイトル空の行になってしまうので画像から落とす
+    items: (rawLines.items || [])
+      .map((item) => ({ ...item, title: stripEmoji(item.title), meta: stripEmoji(item.meta) }))
+      .filter((item) => item.title.length > 0),
+  };
+}
+
+// renderShareImageBlob: 行データからPNGのBlobを作る。Canvas APIのみで自前描画
+// (外部ライブラリ禁止・HTML要素のキャプチャもしない)。描画中に全画面render()は呼ばない。
+// 高さ計算(1パス目)と実描画(2パス目)は共通のrenderShareCanvas()を通すため、
+// 両者のY座標がズレることは構造的に起こらない
+async function renderShareImageBlob(lines) {
+  const width = 900;
+  const margin = 40;
+  const innerX = margin + 28;
+  const innerWidth = width - margin * 2 - 56;
+  const primary = (state.settings && state.settings.themePrimary) || '#f8b6c8';
+  const secondary = (state.settings && state.settings.themeSecondary) || '#a5d8e6';
+  const layout = { width, margin, innerX, innerWidth, primary, secondary };
+
+  // --- 1パス目: ctxなしで内容量から高さを計算する(描画命令は一切実行されない) ---
+  const measured = renderShareCanvas(null, lines, layout, true);
+  const height = measured.height;
+
+  // --- 2パス目: 1パス目で決まった高さで実サイズのcanvasを作り、同じ関数で実描画する ---
+  const canvas = document.createElement('canvas');
+  canvas.width = width * 2;
+  canvas.height = height * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  // 全描画をY=上端基準に統一する(既定のalphabeticのままだとラベルの下端と帯の開始位置がズレる)
+  ctx.textBaseline = 'top';
+
+  // --- 背景グラデーション(テーマ色を薄めた既存の流儀と同じ) ---
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, mixWithWhite(primary, 0.3));
+  gradient.addColorStop(1, mixWithWhite(secondary, 0.3));
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  // --- 白い角丸カード(高さはコンテンツ量に応じてrenderShareCanvasが決めたcardHeightを使う) ---
+  drawRoundedRect(ctx, margin, margin, width - margin * 2, measured.cardHeight, 24);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  renderShareCanvas(ctx, lines, layout, false);
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('canvas.toBlobが空を返しました');
+  return blob;
+}
+
+// canUseShareSheet: 端末の共有シート経由でXに渡すべきかどうか(v34)。
+// navigator.share の有無だけで判定すると、Windows版のChrome/Edgeも「共有できる」と答えてしまい、
+// PCでWindowsの共有パネルが開いてXに辿り着けない。そのため
+// 「スマホ・タブレットらしい端末」であることを併せて確認する
+function canUseShareSheet() {
+  if (typeof navigator === 'undefined') return false;
+  if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
+  const ua = String(navigator.userAgent || '');
+  const isMobileUa = /Android|iPhone|iPad|iPod/i.test(ua);
+  // iPadOSはUAがMacintoshになるため、タッチ対応の有無で拾う
+  const isTouchMac = /Macintosh/.test(ua) && Number(navigator.maxTouchPoints || 0) > 1;
+  return isMobileUa || isTouchMac;
+}
+
+// copyImageToClipboard: PNGをクリップボードにコピーする(PCでX投稿欄に貼り付けるため)。
+// 対応していない・許可されない環境では false を返すだけでエラーにはしない(保存で代替する)
+async function copyImageToClipboard(blob) {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function') return false;
+    if (typeof ClipboardItem === 'undefined') return false;
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    return true;
+  } catch (e) {
+    console.error('画像のクリップボードへのコピーに失敗しました(保存で代替します)', e);
+    return false;
+  }
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // クリック直後に開放するとブラウザによってはダウンロードが中断されるため、少し待ってから開放する
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// buildXIntentUrl: Xの投稿画面のURLを作る純関数。本文だけを載せる
+// (Xの仕様上、URLで画像を添付することはできないため、画像はコピー/保存して貼り付けてもらう)
+function buildXIntentUrl(text) {
+  return `https://x.com/intent/post?text=${encodeURIComponent(text || '')}`;
+}
+
+// shareImageToX: 画像を作ってXへの共有まで面倒を見る共通処理(v34)。
+//  - スマホ(共有シートあり): 画像+本文をそのまま共有シートに渡す。ユーザーはXを選ぶだけ
+//  - PC: 画像をクリップボードにコピーしつつ保存し、Xの投稿画面を新しいタブで開く。
+//    投稿欄に貼り付ける(Ctrl+V)だけで画像付きの下書きになる
+// ポップアップブロック対策として、投稿画面用のタブは画像を作る前(=クリック直後)に確保する。
+// すべてtry/catchで囲み、失敗時は日本語トースト+console.errorにする
+async function shareImageToX(rawLines, fileName, postText) {
+  const useSheet = canUseShareSheet();
+  let intentWindow = null;
+  if (!useSheet) {
+    try {
+      intentWindow = window.open('about:blank', '_blank');
+      if (intentWindow) intentWindow.opener = null;
+    } catch (openErr) {
+      console.error('投稿画面のタブを開けませんでした', openErr);
+      intentWindow = null;
+    }
+  }
+  let blob = null;
+  try {
+    blob = await renderShareImageBlob(sanitizeShareLines(rawLines));
+  } catch (e) {
+    if (intentWindow && !intentWindow.closed) intentWindow.close();
+    console.error('画像の作成に失敗しました', e);
+    showToast('画像の作成に失敗しました');
+    return;
+  }
+
+  // --- スマホ: 共有シートに画像+本文をそのまま渡す ---
+  if (useSheet) {
+    try {
+      const file = new File([blob], fileName, { type: 'image/png' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text: postText });
+        return;
+      }
+    } catch (shareErr) {
+      // ユーザーが共有シートをキャンセルした場合はエラー扱いにせず静かに終了する
+      if (shareErr && shareErr.name === 'AbortError') return;
+      // それ以外の失敗(共有非対応・時間切れなど)は、画像を失わないよう下の保存経路へ進む
+      console.error('共有シートでの共有に失敗しました。保存に切り替えます', shareErr);
+    }
+  }
+
+  // --- PC(および共有シートが使えなかった場合): 画像をコピー&保存してX投稿画面を開く ---
+  try {
+    const copied = await copyImageToClipboard(blob);
+    downloadBlob(blob, fileName);
+    const intentUrl = buildXIntentUrl(postText);
+    let opened = false;
+    if (intentWindow && !intentWindow.closed) {
+      intentWindow.location.href = intentUrl;
+      opened = true;
+    } else {
+      opened = !!window.open(intentUrl, '_blank', 'noopener');
+    }
+    if (!opened) showToast('画像を保存しました。投稿画面が開けないときはポップアップを許可してください');
+    else if (copied) showToast('画像をコピーしました。Xの投稿欄に貼り付けてください');
+    else showToast('画像を保存しました。Xの投稿欄に添付してください');
+  } catch (e) {
+    if (intentWindow && !intentWindow.closed) intentWindow.close();
+    console.error('画像の共有に失敗しました', e);
+    showToast('画像は作れましたが共有に失敗しました');
+  }
+}
+
+// handleShareTodayImage: 「今日の予定」をPNG画像にしてXへ共有する。
 // 画像には「公開して差し支えない情報」のみを描く:
 //  - 自分のシフト(勤務予定)は一切描画しない(buildShareLinesの戻り値にshiftLine自体が無い)
 //  - 自分の予定(kind==='personal')・非公開カテゴリ(限定配信members・FB通話call)はbuildShareLines側で
 //    itemsから除外済み。公開用メモ(publicMemo)・自分用メモ(memo)はうっかり公開防止のため一切含めない
-//  - 絵文字はCanvasのフォント環境によって豆腐(□)になり得るため一切使わず、描画する全テキストに
-//    stripEmoji()を適用する
-// 描画中に全画面render()は呼ばない
-//
-// 高さ計算(1パス目)と実描画(2パス目)は共通のrenderShareCanvas()を通すため、
-// 両者のY座標がズレることは構造的に起こらない
-async function handleShareTodayImage() {
-  try {
-    const agenda = todayAgenda(state, todayStr());
-    const rawLines = buildShareLines(agenda, state.settings, computeReminders(state, todayStr()), state.events);
+function handleShareTodayImage() {
+  const today = todayStr();
+  const agenda = todayAgenda(state, today);
+  const rawLines = buildShareLines(agenda, state.settings, computeReminders(state, today), state.events);
+  const postText = `今日の予定 ${formatDateLabel(today)}`;
+  return shareImageToX(rawLines, `今日の予定_${today}.png`, postText);
+}
 
-    const title = stripEmoji(rawLines.title);
-    const dateLabel = stripEmoji(rawLines.dateLabel);
-    const items = rawLines.items
-      .map((item) => ({ ...item, title: stripEmoji(item.title), meta: stripEmoji(item.meta) }))
-      .filter((item) => item.title.length > 0 || item.meta.length > 0);
-
-    // お知らせ(リマインド)行はここで絵文字を除去して確定させる。
-    // 除去後に空文字になった行は描画も高さ計算も対象外にする
-    const noticeRows = rawLines.reminders
-      .map((text) => stripEmoji(text))
-      .filter((text) => text.length > 0);
-
-    const lines = { title, dateLabel, noticeRows, items };
-
-    const width = 900;
-    const margin = 40;
-    const innerX = margin + 28;
-    const innerWidth = width - margin * 2 - 56;
-    const primary = (state.settings && state.settings.themePrimary) || '#f8b6c8';
-    const secondary = (state.settings && state.settings.themeSecondary) || '#a5d8e6';
-    const layout = { width, margin, innerX, innerWidth, primary, secondary };
-
-    // --- 1パス目: ctxなしで内容量から高さを計算する(描画命令は一切実行されない) ---
-    const measured = renderShareCanvas(null, lines, layout, true);
-    const height = measured.height;
-
-    // --- 2パス目: 1パス目で決まった高さで実サイズのcanvasを作り、同じ関数で実描画する ---
-    const canvas = document.createElement('canvas');
-    canvas.width = width * 2;
-    canvas.height = height * 2;
-    const ctx = canvas.getContext('2d');
-    ctx.scale(2, 2);
-    // 全描画をY=上端基準に統一する(既定のalphabeticのままだとラベルの下端と帯の開始位置がズレる)
-    ctx.textBaseline = 'top';
-
-    // --- 背景グラデーション(テーマ色を薄めた既存の流儀と同じ) ---
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, mixWithWhite(primary, 0.3));
-    gradient.addColorStop(1, mixWithWhite(secondary, 0.3));
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-
-    // --- 白い角丸カード(高さはコンテンツ量に応じてrenderShareCanvasが決めたcardHeightを使う) ---
-    drawRoundedRect(ctx, margin, margin, width - margin * 2, measured.cardHeight, 24);
-    ctx.fillStyle = '#ffffff';
-    ctx.fill();
-
-    renderShareCanvas(ctx, lines, layout, false);
-
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-    if (!blob) throw new Error('canvas.toBlobが空を返しました');
-
-    const fileName = `今日の予定_${todayStr()}.png`;
-    const file = new File([blob], fileName, { type: 'image/png' });
-
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file] });
-      } catch (shareErr) {
-        // ユーザーが共有シートをキャンセルした場合はエラー扱いにせず静かに終了する
-        if (shareErr && shareErr.name === 'AbortError') return;
-        throw shareErr;
-      }
-      return;
-    }
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast('画像を保存しました');
-  } catch (e) {
-    console.error('画像の作成に失敗しました', e);
-    showToast('画像の作成に失敗しました');
-  }
+// handleShareOnSaleImage: 「📌 販売期間中 一覧」をカテゴリごとの画像にしてXへ共有する(v34)。
+// カテゴリが1種類しかないときは選択シートを出さずにそのまま作る
+function handleShareOnSaleImage(category) {
+  const today = todayStr();
+  const rawLines = buildOnSaleShareLines(state, today, category || 'all');
+  const heading = rawLines.heading;
+  setUiState({ sheet: null });
+  return shareImageToX(rawLines, `${heading}_${today}.png`, `${heading}(${formatDateLabel(today)}時点)`);
 }
 
 function handleExportData() {
@@ -2844,6 +3097,17 @@ function handleAction(el) {
     case 'share-today-image':
       handleShareTodayImage();
       break;
+    case 'share-onsale-image': {
+      // カテゴリ指定なしで押された(=一覧の共有ボタン)ときは、選択肢が2つ以上あれば選択シートを出す。
+      // 1種類しかなければ選ばせる意味がないのでそのまま画像を作る
+      const category = el.dataset.category;
+      if (category) { handleShareOnSaleImage(category); break; }
+      const options = listOnSaleShareCategories(state, todayStr());
+      if (options.length > 1) setUiState({ sheet: 'share-onsale' });
+      else if (options.length === 1) handleShareOnSaleImage(options[0].key);
+      else showToast('画像にできる販売期間の予定がありません');
+      break;
+    }
     default:
       break;
   }
@@ -3078,6 +3342,7 @@ if (typeof window !== 'undefined') {
     // constants
     CATEGORIES,
     SHIFT_DEFS,
+    SHIFT_CODE_ORDER,
     STORAGE_KEYS,
     PUBLIC_CATEGORIES,
     formatEventSchedule,
@@ -3114,7 +3379,13 @@ if (typeof window !== 'undefined') {
     fixDraftLongTerm,
     listLongTermEvents,
     listMonthlyEvents,
+    isSharableEvent,
     buildShareLines,
+    listOnSaleShareEvents,
+    listOnSaleShareCategories,
+    buildOnSaleShareLines,
+    sanitizeShareLines,
+    buildXIntentUrl,
     renderShareCanvas,
     stripEmoji,
     isDraftDirty,
