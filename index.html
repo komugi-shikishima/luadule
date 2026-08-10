@@ -70,14 +70,22 @@ h1,h2,h3{ margin:0; }
 #app{ max-width:920px; margin:0 auto; padding-bottom:48px; }
 
 /* header */
-.app-header{ padding:16px 16px 8px; }
+.app-header{ padding:16px 16px 4px; }
 .header-top{ display:flex; align-items:center; justify-content:space-between; }
 .header-top h1{ font-size:1.25rem; font-weight:700; }
 .icon-btn{
   min-width:44px; min-height:44px; border:none; background:#fff; border-radius:var(--radius-md);
   box-shadow:var(--shadow-sm); font-size:1.1rem; display:flex; align-items:center; justify-content:center;
 }
-.header-nav{ display:flex; align-items:center; gap:8px; margin-top:12px; flex-wrap:wrap; }
+/* 操作行(月移動・今日・同期)はスクロールしても画面上部に貼り付く(v37)。
+   #app直下に置いてあるのでページ全体でstickyが効く。
+   bodyの背景グラデーションはfixed指定=画面基準なので、画面上端の色である
+   --bg-top を敷けば背景と自然につながる。シート(z-index:50)・トースト(z-index:100)より下にする */
+.nav-bar{
+  position:sticky; top:0; z-index:5; background:var(--bg-top);
+  padding:8px 16px 10px; box-shadow:0 2px 6px rgba(120,90,90,0.10);
+}
+.header-nav{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .nav-btn{
   min-width:44px; min-height:44px; border:none; background:#fff; border-radius:var(--radius-md);
   box-shadow:var(--shadow-sm); font-size:1rem;
@@ -240,10 +248,16 @@ h1,h2,h3{ margin:0; }
 .btn-primary{ background:var(--primary-dark); color:#fff; }
 .btn-secondary{ background:#fff; border:1px solid var(--border); color:var(--text); }
 .today-share-btn{ width:100%; margin-top:10px; }
-.share-category-list{ display:flex; flex-direction:column; gap:8px; }
-.share-category-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.share-category-list{ display:flex; flex-direction:column; gap:6px; }
+.share-category-item{
+  display:flex; align-items:center; gap:10px; min-height:44px; padding:6px 12px;
+  border:1px solid var(--border); border-radius:var(--radius-md); background:#fff; cursor:pointer;
+}
+.share-category-item input{ width:20px; height:20px; flex-shrink:0; }
+.share-category-label{ flex:1; min-width:0; }
 .share-category-count{ font-size:12px; color:var(--text-muted); }
-.share-note{ margin:12px 0 0; font-size:12px; color:var(--muted); line-height:1.6; }
+.share-note{ margin:12px 0 0; font-size:12px; color:var(--text-muted); line-height:1.6; }
+.share-run-btn{ width:100%; margin-top:12px; }
 
 /* settings */
 .settings-section{ border-bottom:1px solid var(--border); padding-bottom:14px; }
@@ -369,6 +383,8 @@ const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'oth
 // 共有画像1枚に載せる予定の最大件数(v34)。これを超えると「ほか◯件」にまとめる。
 // 画像が縦に長くなりすぎると、端末によってはCanvasのPNG化(toBlob)が失敗するため
 const SHARE_MAX_ITEMS = 24;
+// Xの1投稿に添付できる画像の枚数(v37)。これを超えた分は保存だけして枚数を知らせる
+const X_MAX_IMAGES = 4;
 const GIST_PUBLIC_DESCRIPTION = 'oshical-public-v1';
 const GIST_PUBLIC_FILENAME = 'oshical-public.json';
 const GITHUB_API = 'https://api.github.com';
@@ -787,7 +803,7 @@ function buildOnSaleShareLines(targetState, today, category) {
   const cat = category && category !== 'all' ? CATEGORIES[category] : null;
   const title = `${s.oshiName || '推し'}カレンダー`;
   const dateLabel = today ? `${formatDateLabel(today)} 時点` : '';
-  const heading = cat ? `${cat.label}期間` : '販売期間まとめ';
+  const heading = cat ? `${cat.label}期間` : '販売期間・イベント期間まとめ';
   const effective = computeEffectiveColors(s);
   const all = listOnSaleShareEvents(targetState, today, category);
   const items = all.slice(0, SHARE_MAX_ITEMS).map((ev) => {
@@ -1649,6 +1665,7 @@ let uiState = {
   syncMessage: '',
   toast: null,
   dayLongTermOpen: false, // 日詳細シート内の「期間中の長期予定」折りたたみの開閉
+  shareOnSaleSelection: [], // 販売期間の共有シートでチェック中のカテゴリ(v37)
 };
 let toastTimer = null;
 
@@ -1720,6 +1737,7 @@ function fullRender() {
 function renderApp() {
   return `
     ${renderHeader()}
+    ${renderNavBar()}
     ${renderTodaySection()}
     ${renderMonthlyEventSection()}
     ${renderLongTermSection()}
@@ -1742,14 +1760,25 @@ function renderSyncIndicatorLabel() {
 
 function renderHeader() {
   const oshiName = state.settings.oshiName || '推し';
-  const monthLabel = formatMonthLabel(uiState.year, uiState.month);
-  const syncTitle = syncIndicatorMessage || 'タップで手動同期';
   return `
     <header class="app-header">
       <div class="header-top">
         <h1>${escapeHtml(oshiName)}カレンダー</h1>
         <button type="button" class="icon-btn" data-action="open-settings" aria-label="設定" title="設定">⚙</button>
       </div>
+    </header>
+  `;
+}
+
+// renderNavBar: 月移動・今日ボタン・同期インジケータをまとめた操作行(v37。公開ページのv36と同じ考え方)。
+// カレンダーを見ながら月を移動できるよう、スクロールしても画面上部に貼り付く。
+// **`<header>`の中に置いてはいけない**: position:stickyは親要素の範囲でしか効かないため、
+// ヘッダー内に置くとヘッダーがスクロールアウトした時点で一緒に消える。#app直下(ヘッダーの兄弟)に置く
+function renderNavBar() {
+  const monthLabel = formatMonthLabel(uiState.year, uiState.month);
+  const syncTitle = syncIndicatorMessage || 'タップで手動同期';
+  return `
+    <div class="nav-bar">
       <div class="header-nav">
         <button type="button" class="nav-btn" data-action="prev-month" aria-label="前の月">◀</button>
         <span class="month-label">${escapeHtml(monthLabel)}</span>
@@ -1757,7 +1786,7 @@ function renderHeader() {
         <button type="button" class="today-btn" data-action="go-today">今日</button>
         <button type="button" class="sync-indicator" data-action="manual-sync" title="${escapeHtml(syncTitle)}">${renderSyncIndicatorLabel()}</button>
       </div>
-    </header>
+    </div>
   `;
 }
 
@@ -2007,28 +2036,61 @@ function renderEventDetailSheet() {
   `;
 }
 
-// renderShareOnSaleSheet: 「販売期間まとめ」画像にするカテゴリを選ぶシート(v34)。
-// いま画像にできる予定に含まれるカテゴリだけをボタンにする(件数付き)。
-// 2種類以上あるときは先頭に「すべて」が入る(listOnSaleShareCategoriesが付ける)
+// renderShareOnSaleSheet: 画像にする期間を選ぶシート(v34、v37でチェック式に変更)。
+// いま画像にできる予定に含まれるカテゴリをチェックボックスで並べ、チェックした分だけ
+// **カテゴリごとに1枚ずつ**画像を作ってまとめて共有する。
+// 「すべて(1枚にまとめる)」は従来通り全カテゴリを1枚に詰めた画像で、他と同じく選択肢の1つ。
+// チェックの状態は uiState.shareOnSaleSelection が持ち、切り替えでは再描画しない
+// (シート内で全画面render()を呼ぶとフォーカスが飛ぶため。§8のハマりどころ参照)
 function renderShareOnSaleSheet() {
   const options = listOnSaleShareCategories(state, todayStr());
-  const body = options.length
-    ? `<div class="share-category-list">
-        ${options.map((opt) => `
-          <button type="button" class="btn-secondary share-category-btn" data-action="share-onsale-image" data-category="${escapeHtml(opt.key)}">
-            ${escapeHtml(opt.label)}<span class="share-category-count">${opt.count}件</span>
-          </button>
-        `).join('')}
+  const selection = Array.isArray(uiState.shareOnSaleSelection) ? uiState.shareOnSaleSelection : [];
+  if (!options.length) {
+    return `
+      <div class="sheet-header">
+        <h2>どの期間を画像にしますか？</h2>
+        <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
       </div>
-      <p class="share-note">画像を作ってXの投稿画面を開きます。自分の予定・シフト・メモは画像に入りません。</p>`
-    : '<p class="empty-hint">画像にできる販売期間の予定がありません</p>';
+      <div class="sheet-body"><p class="empty-hint">画像にできる販売期間の予定がありません</p></div>
+    `;
+  }
+  const items = options.map((opt) => `
+    <label class="share-category-item">
+      <input type="checkbox" data-share-category="${escapeHtml(opt.key)}" ${selection.indexOf(opt.key) !== -1 ? 'checked' : ''}>
+      <span class="share-category-label">${escapeHtml(opt.key === 'all' ? 'すべて(1枚にまとめる)' : `${opt.label}期間`)}</span>
+      <span class="share-category-count">${opt.count}件</span>
+    </label>
+  `).join('');
   return `
     <div class="sheet-header">
       <h2>どの期間を画像にしますか？</h2>
       <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
     </div>
-    <div class="sheet-body">${body}</div>
+    <div class="sheet-body">
+      <div class="share-category-list">${items}</div>
+      <p class="share-note">
+        チェックした分だけ画像を作ってXの投稿画面を開きます(1枚ずつ別の画像になります)。<br>
+        Xの投稿に添付できるのは1回につき4枚までです。<br>
+        自分の予定・シフト・メモは画像に入りません。
+      </p>
+      <button type="button" class="btn-primary share-run-btn" data-action="share-onsale-run">画像を作ってXで共有</button>
+    </div>
   `;
+}
+
+// toggleShareCategory: チェックの入り切りを反映した新しい配列を返す純関数(不変更新)。
+// 同じキーを二重に持たない。null/非配列を渡しても落ちない
+function toggleShareCategory(selection, key, checked) {
+  const current = Array.isArray(selection) ? selection : [];
+  if (!key) return current.slice();
+  const without = current.filter((k) => k !== key);
+  return checked ? without.concat([key]) : without;
+}
+
+// defaultShareOnSaleSelection: シートを開いたときの既定チェック。
+// カテゴリ別の画像を全部作る状態(=「すべて(1枚にまとめる)」以外を全部チェック)から始める
+function defaultShareOnSaleSelection(options) {
+  return (options || []).filter((opt) => opt.key !== 'all').map((opt) => opt.key);
 }
 
 function renderShiftButtons(shift) {
@@ -2848,7 +2910,10 @@ function buildXIntentUrl(text) {
 //    投稿欄に貼り付ける(Ctrl+V)だけで画像付きの下書きになる
 // ポップアップブロック対策として、投稿画面用のタブは画像を作る前(=クリック直後)に確保する。
 // すべてtry/catchで囲み、失敗時は日本語トースト+console.errorにする
-async function shareImageToX(rawLines, fileName, postText) {
+async function shareImagesToX(shareItems, postText) {
+  const items = Array.isArray(shareItems) ? shareItems : [];
+  if (!items.length) { showToast('画像にするものがありません'); return; }
+
   const useSheet = canUseShareSheet();
   let intentWindow = null;
   if (!useSheet) {
@@ -2860,9 +2925,13 @@ async function shareImageToX(rawLines, fileName, postText) {
       intentWindow = null;
     }
   }
-  let blob = null;
+
+  let files = [];
   try {
-    blob = await renderShareImageBlob(sanitizeShareLines(rawLines));
+    for (const item of items) {
+      const blob = await renderShareImageBlob(sanitizeShareLines(item.lines));
+      files.push({ blob, file: new File([blob], item.fileName, { type: 'image/png' }) });
+    }
   } catch (e) {
     if (intentWindow && !intentWindow.closed) intentWindow.close();
     console.error('画像の作成に失敗しました', e);
@@ -2870,12 +2939,16 @@ async function shareImageToX(rawLines, fileName, postText) {
     return;
   }
 
+  // Xの1投稿に添付できるのは4枚まで。超える分は保存だけして枚数を伝える
+  const shareFiles = files.slice(0, X_MAX_IMAGES).map((f) => f.file);
+  const overflow = files.length - shareFiles.length;
+
   // --- スマホ: 共有シートに画像+本文をそのまま渡す ---
   if (useSheet) {
     try {
-      const file = new File([blob], fileName, { type: 'image/png' });
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], text: postText });
+      if (navigator.canShare({ files: shareFiles })) {
+        await navigator.share({ files: shareFiles, text: postText });
+        if (overflow > 0) showToast(`Xに添付できるのは4枚までです。残り${overflow}枚は共有していません`);
         return;
       }
     } catch (shareErr) {
@@ -2886,10 +2959,18 @@ async function shareImageToX(rawLines, fileName, postText) {
     }
   }
 
-  // --- PC(および共有シートが使えなかった場合): 画像をコピー&保存してX投稿画面を開く ---
+  // --- PC(および共有シートが使えなかった場合): 画像を保存してX投稿画面を開く ---
+  // 画像が1枚のときだけクリップボードにもコピーする(クリップボードには1枚しか入らないため)
   try {
-    const copied = await copyImageToClipboard(blob);
-    downloadBlob(blob, fileName);
+    // クリップボードへの書き込みは「このページに焦点がある」ことが条件。
+    // 先に確保した投稿用タブへ焦点が移っていることがあるので、書き込む前に取り戻しておく
+    // (取り戻せなくてもcopyImageToClipboardがfalseを返すだけで、保存には影響しない)
+    try { window.focus(); } catch (focusErr) { console.error('画面の焦点を戻せませんでした', focusErr); }
+    const copied = files.length === 1 ? await copyImageToClipboard(files[0].blob) : false;
+    files.forEach((f, index) => {
+      // 連続してダウンロードするとブラウザが後続を無視することがあるので少しずつずらす
+      setTimeout(() => downloadBlob(f.blob, items[index].fileName), index * 300);
+    });
     const intentUrl = buildXIntentUrl(postText);
     let opened = false;
     if (intentWindow && !intentWindow.closed) {
@@ -2898,14 +2979,20 @@ async function shareImageToX(rawLines, fileName, postText) {
     } else {
       opened = !!window.open(intentUrl, '_blank', 'noopener');
     }
-    if (!opened) showToast('画像を保存しました。投稿画面が開けないときはポップアップを許可してください');
+    if (!opened) showToast(`画像を${files.length}枚保存しました。投稿画面が開けないときはポップアップを許可してください`);
     else if (copied) showToast('画像をコピーしました。Xの投稿欄に貼り付けてください');
-    else showToast('画像を保存しました。Xの投稿欄に添付してください');
+    else if (files.length === 1) showToast('画像を保存しました。Xの投稿欄に添付してください');
+    else showToast(`画像を${files.length}枚保存しました。Xの投稿欄に添付してください${overflow > 0 ? '(添付は4枚まで)' : ''}`);
   } catch (e) {
     if (intentWindow && !intentWindow.closed) intentWindow.close();
     console.error('画像の共有に失敗しました', e);
     showToast('画像は作れましたが共有に失敗しました');
   }
+}
+
+// shareImageToX: 1枚だけ共有する場合の入口(「今日の予定」から使う)
+function shareImageToX(rawLines, fileName, postText) {
+  return shareImagesToX([{ lines: rawLines, fileName }], postText);
 }
 
 // handleShareTodayImage: 「今日の予定」をPNG画像にしてXへ共有する。
@@ -2921,14 +3008,37 @@ function handleShareTodayImage() {
   return shareImageToX(rawLines, `今日の予定_${today}.png`, postText);
 }
 
-// handleShareOnSaleImage: 「📌 販売期間中 一覧」をカテゴリごとの画像にしてXへ共有する(v34)。
-// カテゴリが1種類しかないときは選択シートを出さずにそのまま作る
-function handleShareOnSaleImage(category) {
+// buildOnSaleSharePlan: チェックされたカテゴリから「作る画像の一覧」を組み立てる純関数(v37)。
+// カテゴリ1つにつき画像1枚。中身が0件になるものは作らない。
+// 並び順は listOnSaleShareCategories の順(すべて → カテゴリ定義順)に揃える。
+// 戻り値: { items: [{ category, heading, fileName, lines }], postText }
+function buildOnSaleSharePlan(targetState, today, selection) {
+  const selected = Array.isArray(selection) ? selection : [];
+  const items = listOnSaleShareCategories(targetState, today)
+    .filter((opt) => selected.indexOf(opt.key) !== -1)
+    .map((opt) => {
+      const lines = buildOnSaleShareLines(targetState, today, opt.key);
+      return { category: opt.key, heading: lines.heading, fileName: `${lines.heading}_${today}.png`, lines };
+    })
+    .filter((item) => item.lines.items.length > 0);
+  const dateLabel = today ? formatDateLabel(today) : '';
+  const postText = items.length === 1
+    ? `${items[0].heading}(${dateLabel}時点)`
+    : `販売期間・イベント期間まとめ(${dateLabel}時点)`;
+  return { items, postText };
+}
+
+// handleShareOnSaleImages: 「📌 販売期間中 一覧」をチェックした分だけ画像にしてXへ共有する
+// (v34。v37でチェック式・複数枚対応に変更)
+function handleShareOnSaleImages(selection) {
   const today = todayStr();
-  const rawLines = buildOnSaleShareLines(state, today, category || 'all');
-  const heading = rawLines.heading;
+  const plan = buildOnSaleSharePlan(state, today, selection);
+  if (!plan.items.length) { showToast('画像にするものを選んでください'); return; }
   setUiState({ sheet: null });
-  return shareImageToX(rawLines, `${heading}_${today}.png`, `${heading}(${formatDateLabel(today)}時点)`);
+  return shareImagesToX(
+    plan.items.map((item) => ({ lines: item.lines, fileName: item.fileName })),
+    plan.postText
+  );
 }
 
 function handleExportData() {
@@ -3098,16 +3208,17 @@ function handleAction(el) {
       handleShareTodayImage();
       break;
     case 'share-onsale-image': {
-      // カテゴリ指定なしで押された(=一覧の共有ボタン)ときは、選択肢が2つ以上あれば選択シートを出す。
+      // 一覧の共有ボタン。選択肢が2つ以上あればチェック式の選択シートを出す。
       // 1種類しかなければ選ばせる意味がないのでそのまま画像を作る
-      const category = el.dataset.category;
-      if (category) { handleShareOnSaleImage(category); break; }
       const options = listOnSaleShareCategories(state, todayStr());
-      if (options.length > 1) setUiState({ sheet: 'share-onsale' });
-      else if (options.length === 1) handleShareOnSaleImage(options[0].key);
+      if (options.length > 1) setUiState({ sheet: 'share-onsale', shareOnSaleSelection: defaultShareOnSaleSelection(options) });
+      else if (options.length === 1) handleShareOnSaleImages([options[0].key]);
       else showToast('画像にできる販売期間の予定がありません');
       break;
     }
+    case 'share-onsale-run':
+      handleShareOnSaleImages(uiState.shareOnSaleSelection);
+      break;
     default:
       break;
   }
@@ -3152,6 +3263,14 @@ function onAppChange(e) {
   }
   if (e.target.dataset.purchaseToggle) {
     handlePurchasedToggle(e.target.dataset.purchaseToggle, e.target.checked);
+    return;
+  }
+  if (e.target.dataset.shareCategory) {
+    // 共有シート内のチェック操作。再描画するとシートが作り直されてフォーカスが飛ぶため、
+    // uiStateだけを静かに更新する(チェックの見た目はブラウザ側が保持する)
+    setUiStateSilent({
+      shareOnSaleSelection: toggleShareCategory(uiState.shareOnSaleSelection, e.target.dataset.shareCategory, e.target.checked),
+    });
     return;
   }
   if (e.target.dataset.colorCat) {
@@ -3384,6 +3503,9 @@ if (typeof window !== 'undefined') {
     listOnSaleShareEvents,
     listOnSaleShareCategories,
     buildOnSaleShareLines,
+    buildOnSaleSharePlan,
+    toggleShareCategory,
+    defaultShareOnSaleSelection,
     sanitizeShareLines,
     buildXIntentUrl,
     renderShareCanvas,
