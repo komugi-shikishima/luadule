@@ -1,11 +1,18 @@
 # =============================================================
-# ルアジュール Discord通知ワークフロー (v3)
+# ルアジュール Discord通知ワークフロー (v4)
 # リポジトリに「.github/workflows/notify.yml」という名前で保存します。
 #
-# 機能:
-#  - 朝・昼・夜のダイジェスト通知(時刻はアプリの ⚙設定 →「通知」で変更。-1=送らない)
-#  - 開始時刻付きの予定の「約30分前」リマインド(⏰)
-# 30分ごとに起動し、送るべきものがあるときだけDiscordへ送信します。
+# 起動: 毎日 0時 / 6時 / 12時 / 18時(日本時間)の1日4回だけ。
+#   起動すると「その6時間の間に送るもの」を先に洗い出し、送る時刻まで待ってから送ります。
+#   送るものが無くなった時点で終了します(v3までの30分ごとの起動は廃止)。
+#   送る直前に毎回データ置き場を読み直すので、その時点の最新の予定で通知します。
+#
+# 送るもの:
+#  - 朝・昼・夜のダイジェスト(時刻はアプリの ⚙設定 →「通知」で変更。-1=送らない)
+#    朝・昼 … 今日の予定(長期予定は除く)+ 最終日のお知らせ
+#              ※1日と月末の朝だけ「いま販売中のもの」一覧が付きます
+#    夜   … 明日が最終日のお知らせ・明日のシフト・明日の予定(対象が無ければ送りません)
+#  - 開始時刻がある予定の「30分前」リマインド(⏰)
 #
 # 必要なSecrets(リポジトリのSettings → Secrets and variables → Actions):
 #   LUADULE_GIST_ID    … データ置き場(oshical-sync-v1)のGist ID
@@ -13,21 +20,30 @@
 #   LUADULE_WEBHOOK    … DiscordのWebhook URL
 #
 # ※Actionsタブから手動実行(Run workflow)すると、時刻に関係なく朝の通知を1回送ります
-# ※GitHubの仕様で実行が数分遅れるため、30分前リマインドは「約30分前(±15分)」の精度です
+# ※起動が数分遅れることがあります。遅れて起動した場合、その間に送るはずだった分は起動直後にまとめて送ります
+# ※起動の合間(例: 13時)に新しく追加した予定の⏰30分前リマインドは、次の起動(18時)以降の分から有効になります
 # =============================================================
 name: Luadule Discord Notify
 
 on:
   schedule:
-    - cron: '*/30 * * * *' # 30分ごとに起動(送信判定はスクリプト内)
+    # UTC 15/21/3/9時 = 日本時間 0/6/12/18時
+    - cron: '0 3,9,15,21 * * *'
   workflow_dispatch: # 手動実行(テスト用・常に朝の通知を送る)
 
 permissions:
   contents: write
 
+# 同じ枠を2つのジョブが担当して二重送信するのを防ぐ。
+# 起動が大幅に遅れて枠がずれた場合や、失敗ジョブの再実行が重なった場合に効く
+concurrency:
+  group: luadule-notify
+  cancel-in-progress: true
+
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 360 # 送る時刻まで待つ方式のため長め(GitHubの上限)。通常は数分〜数時間で自然終了する
     steps:
       - uses: actions/checkout@v4
 
@@ -44,10 +60,18 @@ jobs:
         run: |
           cat > /tmp/notify.mjs << 'NOTIFY_EOF'
           'use strict';
-          // ルアジュール通知スクリプト v3(アプリ本体 index.html と同じ暗号形式・リマインドルール)
-          // ダイジェスト: settings.notifyMorningHour / notifyNoonHour / notifyEveningHour (JST, -1=OFF)
-          //   に一致し、かつ分が30未満の起動時のみ送信(30分毎起動の二重送信防止)
-          // ⏰30分前リマインド: 開始時刻付きの予定の 15〜44分前に当たる起動で送信
+          // ルアジュール通知スクリプト v4(アプリ本体 index.html と同じ暗号形式・表示ルール)
+          //
+          // v3からの変更点:
+          //  1) 30分ごとの起動を廃止し、1日4回(JST 0/6/12/18時)の「6時間の枠」を担当する方式にした。
+          //     起動すると枠内に送るべきタスク(ダイジェスト/⏰30分前リマインド)を洗い出し、
+          //     その時刻まで待って(sleep)から送る。送るタスクが無くなったら即終了する。
+          //     送信の直前に毎回データ置き場を読み直すので「通知と同じタイミングで更新確認」になる。
+          //  2) ダイジェストの中身を絞った。以前は期間中の予定を毎日すべて並べていたが、
+          //     長期予定(longTerm===true)はアプリの「今日の予定」カードと同じ基準で除外する。
+          //     残るのは「その日の予定」と「最終日のお知らせ」のみ。
+          //     ただし月初(1日)と月末(その月の最終日)の朝だけ「いま販売中のもの」一覧を添える。
+          //  3) 「今日から!」(🎪)のお知らせは廃止した(その日の予定として出るため重複)。
           import { readFileSync } from 'fs';
 
           const GIST_ID = process.env.GIST_ID || '';
@@ -57,20 +81,33 @@ jobs:
           const FORCE_MODE = process.env.FORCE_MODE || ''; // 'morning' | 'noon' | 'evening'
           const TEST_NOW = process.env.TEST_NOW || '';     // テスト用: 現在時刻(epoch ms)の上書き
           const DRY_RUN = process.env.DRY_RUN === '1';     // テスト用: Discordに送らず表示のみ
+          const NO_SLEEP = process.env.NO_SLEEP === '1';   // テスト用: 待ち時間を実際には待たず時計だけ進める
+          const PLAN_ONLY = process.env.PLAN_ONLY === '1'; // テスト用: 枠内のタスク一覧だけ出して終了
 
           const GIST_FILENAME = 'oshical.enc.json';
           const PBKDF2_ITERATIONS = 310000;
           const DEFAULT_MORNING_HOUR = 7;
           const DEFAULT_NOON_HOUR = 12;
           const DEFAULT_EVENING_HOUR = 20;
-          const SOON_MIN = 15;  // ⏰の下限(この分数以上先)
-          const SOON_MAX = 45;  // ⏰の上限(この分数未満)
+          const WINDOW_HOURS = 6;        // 1回の起動が担当する時間の長さ(0-6時/6-12時/12-18時/18-24時)
+          const SOON_BEFORE_MIN = 30;    // ⏰リマインドを送る「開始の何分前か」
+          const SOON_STALE_MIN = 20;     // ⏰が遅れた場合の許容(これ以上遅れたら送らない。開始後の「あと約0分」防止)
+          const MAX_LOOPS = 100;         // 無限ループ保険(1枠で処理するタスク数の上限)
+          const MAX_RETRY = 3;           // 通信失敗時のリトライ回数(GitHub API / Discord 共通)
+          const RETRY_WAIT_MS = 5000;    // リトライの待ち時間(回数に応じて伸ばす)
+          const DISCORD_MAX_CHARS = 1900; // Discordの1メッセージ上限(2000)より少し手前で分割する
+          // index.html の SHIFT_DEFS と同一に保つこと。
+          // 'hw' は細分化前(v34まで)の「休出」。既存データの表示のために残している
           const SHIFT_DEFS = {
             '1': { label: '①', time: '7:00–15:00' },
             '2': { label: '②', time: '15:00–22:15' },
             '3': { label: '③', time: '22:15–翌7:00' },
             off: { label: '休み', time: '' },
+            paid: { label: '有給', time: '' },
             hw: { label: '休出', time: '' },
+            hw1: { label: '休出①', time: '7:00–15:00' },
+            hw2: { label: '休出②', time: '15:00–22:15' },
+            hw3: { label: '休出③', time: '22:15–翌7:00' },
           };
           const CAT_LABELS = {
             event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信',
@@ -111,10 +148,31 @@ jobs:
             return JSON.parse(file.content);
           }
 
+          // loadData: データ置き場を読み直して復号する。送信の直前に毎回呼ぶ(=通知と同じタイミングで更新確認)。
+          // 1日4回しか起動しない方式なので、一時的な通信エラーで枠まるごと落とさないようリトライする。
+          // 合言葉違い・データ破損は何度やっても直らないのでリトライしない
+          async function loadData() {
+            let lastError = null;
+            for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+              try {
+                return await decryptData(await fetchEncryptedPayload(), PASSPHRASE);
+              } catch (e) {
+                lastError = e;
+                if (/合言葉|データ形式/.test(e.message)) throw e;
+                console.warn(`データ取得に失敗しました(${attempt}/${MAX_RETRY}): ${e.message}`);
+                if (attempt < MAX_RETRY) await sleep(RETRY_WAIT_MS * attempt);
+              }
+            }
+            throw lastError;
+          }
+
           // --- 日付ユーティリティ(JST基準・文字列ベース) ---
+          // jstNow()が返すDateは「UTCの読み方をするとJSTの値になる」ようにずらしたもの。
+          // 以降のgetUTC*/Date.UTC()はすべてこのずらした時間軸の上で一貫して扱う
+          let CLOCK_OFFSET_MS = 0; // NO_SLEEP のテスト時だけ、待った分を仮想的に進めるために使う
           function jstNow() {
             const base = TEST_NOW ? Number(TEST_NOW) : Date.now();
-            return new Date(base + 9 * 3600 * 1000);
+            return new Date(base + CLOCK_OFFSET_MS + 9 * 3600 * 1000);
           }
           function toDateStr(d) {
             return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -140,6 +198,9 @@ jobs:
             if (sm === 2 && sd === 29 && tm === 2 && td === 28) return !isLeapYear(ty);
             return false;
           }
+          // isFirstDayOfMonth / isLastDayOfMonth: 月初(1日)・月末(その月の最終日)かどうか
+          function isFirstDayOfMonth(dateStr) { return dateStr.split('-')[2] === '01'; }
+          function isLastDayOfMonth(dateStr) { return addDaysStr(dateStr, 1).split('-')[2] === '01'; }
           function fmtMD(s) { const p = s.split('-').map(Number); return `${p[1]}/${p[2]}`; }
           function weekday(s) {
             const [y, m, d] = s.split('-').map(Number);
@@ -158,19 +219,34 @@ jobs:
           function timeRange(ev) {
             return ev.time ? `${ev.time}〜${ev.endTime || ''}` : '';
           }
+          function fmtClock(ms) {
+            const d = new Date(ms);
+            return `${toDateStr(d)} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+          }
+          function sleep(ms) {
+            if (NO_SLEEP) { CLOCK_OFFSET_MS += ms; return Promise.resolve(); }
+            return new Promise((resolve) => setTimeout(resolve, ms));
+          }
 
-          // --- リマインド組み立て(純関数) ---
+          // --- 通知本文の組み立て(純関数) ---
           function activeEvents(events) {
             return (events || []).filter((e) => e && !e.deleted && e.title && e.startDate && e.endDate);
           }
+          // 長期予定(アプリで「長期予定として表示する」にチェックしたもの)。
+          // 販売期間などが毎日ずっと通知に並ぶのを防ぐため、日々の予定行からは除外する
+          function isLongTerm(e) { return !!e && e.longTerm === true; }
           function shiftLine(shifts, dateStr, prefix) {
             const s = (shifts || {})[dateStr];
             if (!s || s.deleted || !SHIFT_DEFS[s.code]) return null;
             const def = SHIFT_DEFS[s.code];
             return `💼 ${prefix}のシフト: ${def.label}${def.time ? `(${def.time})` : ''}`;
           }
+          // eventLines: その日の予定の行。長期予定はアプリの「今日の予定」カードと同じ基準で除外する。
+          // ただし「その日から始まる」長期予定だけは、その日の予定として1回だけ出す
+          // (販売開始を知らせないと買い逃すため。翌日以降は出ない)
           function eventLines(events, dateStr) {
             return activeEvents(events)
+              .filter((e) => !isLongTerm(e) || e.startDate === dateStr)
               .filter((e) => occursOnDay(e, dateStr))
               .map((e) => {
                 const cat = CAT_LABELS[e.category] || 'その他';
@@ -181,20 +257,49 @@ jobs:
                 return `・[${cat}] ${e.title}${extra}`;
               });
           }
-          function buildDaily(data, today) {
-            const lines = [];
+          // deadlineLines: 最終日のお知らせ(今日が最終日 / 明日が最終日)。期間もの(開始日≠終了日)のみ対象
+          function deadlineLines(events, today) {
             const tomorrow = addDaysStr(today, 1);
+            const lines = [];
+            activeEvents(events).forEach((e) => {
+              if (e.startDate === e.endDate) return;
+              if (e.endDate === today) lines.push(`🔔 『${e.title}』は今日が最終日!`);
+              else if (e.endDate === tomorrow) lines.push(`⚠ 『${e.title}』は明日が最終日!`);
+            });
+            return lines;
+          }
+          // onSaleLines: いま販売中(=長期予定でまだ終わっていないもの)の一覧。締切日が近い順。
+          // 月初(1日)と月末の朝の通知にだけ添える
+          function onSaleLines(events, today) {
+            return activeEvents(events)
+              .filter(isLongTerm)
+              .filter((e) => e.endDate >= today)
+              .slice()
+              .sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1
+                : (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0)))
+              .map((e) => {
+                const cat = CAT_LABELS[e.category] || 'その他';
+                return `・[${cat}] ${e.title}(${fmtMD(e.startDate)}〜${fmtMD(e.endDate)}まで)`;
+              });
+          }
+          // buildDaily: 朝・昼のダイジェスト。withOnSale=true(朝のみ)かつ月初/月末なら販売中一覧を添える
+          function buildDaily(data, today, withOnSale) {
+            const lines = [];
             const shift = shiftLine(data.shifts, today, '今日');
             if (shift) lines.push(shift);
             const evs = eventLines(data.events, today);
             if (evs.length) { lines.push('📅 今日の予定'); lines.push(...evs); }
-            activeEvents(data.events).forEach((e) => {
-              const multi = e.startDate !== e.endDate;
-              if (multi && e.startDate === today) lines.push(`🎪 『${e.title}』今日から!`);
-              if (multi && e.endDate === today) lines.push(`🔔 『${e.title}』は今日が最終日!`);
-              if (multi && e.endDate === tomorrow) lines.push(`⚠ 『${e.title}』は明日が最終日!`);
-            });
-            if (!lines.length) lines.push('今日の予定はありません🌸');
+            lines.push(...deadlineLines(data.events, today));
+            const onSale = onSaleLines(data.events, today);
+            if (withOnSale && (isFirstDayOfMonth(today) || isLastDayOfMonth(today)) && onSale.length) {
+              lines.push(isFirstDayOfMonth(today) ? '🛒 いま販売中のもの(月初のお知らせ)' : '🛒 いま販売中のもの(月末のお知らせ)');
+              lines.push(...onSale);
+            }
+            // 何も無い日でも、販売期間中のものがあるならその件数だけは伝える
+            // (「予定はありません」だけだと販売が終わったと誤解するため)
+            if (!lines.length) {
+              lines.push(onSale.length ? `今日の予定はありません🌸(販売期間中のもの ${onSale.length}件)` : '今日の予定はありません🌸');
+            }
             return lines;
           }
           function buildEvening(data, today) {
@@ -211,78 +316,211 @@ jobs:
             if (evs.length) { lines.push('📅 明日の予定'); lines.push(...evs); }
             return lines; // 空なら送信スキップ
           }
-          // buildSoon: 開始15〜44分前に当たる予定(今日・明日開始のもの)の⏰行を返す
-          function buildSoon(data, nowShiftedMs, today) {
-            const tomorrow = addDaysStr(today, 1);
-            return activeEvents(data.events)
-              .filter((e) => e.startDate === today || e.startDate === tomorrow)
-              .map((e) => ({ e, start: eventStartMs(e) }))
-              .filter((x) => x.start !== null)
-              .map((x) => ({ ...x, diffMin: Math.round((x.start - nowShiftedMs) / 60000) }))
-              .filter((x) => x.diffMin >= SOON_MIN && x.diffMin < SOON_MAX)
-              .map((x) => `・『${x.e.title}』${timeRange(x.e)}(あと約${x.diffMin}分)`);
+          function soonLine(ev, nowShiftedMs) {
+            const start = eventStartMs(ev);
+            const diffMin = start === null ? 0 : Math.max(0, Math.round((start - nowShiftedMs) / 60000));
+            return `・『${ev.title}』${timeRange(ev)}(あと約${diffMin}分)`;
           }
 
-          async function postDiscord(content) {
-            if (DRY_RUN) { console.log('--- DRY RUN(送信内容) ---\n' + content); return; }
-            if (!WEBHOOK) throw new Error('LUADULE_WEBHOOK が設定されていません');
-            const res = await fetch(WEBHOOK, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content }),
+          // --- 枠(6時間)の中で送るタスクの洗い出し ---
+          // windowStartMs: 起動時刻が属する枠の開始時刻(JST 0/6/12/18時)
+          function windowStartOf(now) {
+            const base = Math.floor(now.getUTCHours() / WINDOW_HOURS) * WINDOW_HOURS;
+            return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), base);
+          }
+          // buildTasks: 枠[ws, we)の中に入る「送るもの」を時刻順で返す純関数。
+          //  - ダイジェスト3種(設定時刻・-1は送らない)
+          //  - 開始時刻がある予定の30分前リマインド(枠の日付とその翌日開始の予定が対象。
+          //    枠は0時をまたがないので、翌日開始が枠に入るのは18-24時の枠だけ)
+          // 各タスクには一意のkeyを付け、同じ枠の中で二重送信しないようにする
+          function buildTasks(data, ws, we) {
+            const dayStr = toDateStr(new Date(ws));
+            const [y, m, d] = dayStr.split('-').map(Number);
+            const settings = data.settings || {};
+            const tasks = [];
+            const add = (at, key, extra) => { if (at >= ws && at < we) tasks.push({ at, key, ...extra }); };
+            const digestDefs = [
+              ['morning', settingHour(settings.notifyMorningHour, DEFAULT_MORNING_HOUR)],
+              ['noon', settingHour(settings.notifyNoonHour, DEFAULT_NOON_HOUR)],
+              ['evening', settingHour(settings.notifyEveningHour, DEFAULT_EVENING_HOUR)],
+            ];
+            digestDefs.forEach(([mode, hour]) => {
+              if (hour < 0 || hour > 23) return;
+              add(Date.UTC(y, m - 1, d, hour, 0), `digest:${mode}:${dayStr}`, { type: 'digest', mode, dateStr: dayStr });
             });
-            if (!res.ok) throw new Error(`Discordへの送信に失敗しました(${res.status})`);
+            const tomorrow = addDaysStr(dayStr, 1);
+            activeEvents(data.events)
+              .filter((e) => e.startDate === dayStr || e.startDate === tomorrow)
+              .forEach((e, index) => {
+                const start = eventStartMs(e);
+                if (start === null) return;
+                // idが無い旧データ同士で衝突しないよう並び順も鍵に混ぜる
+                add(start - SOON_BEFORE_MIN * 60000, `soon:${e.id || `idx${index}`}:${e.startDate}:${e.time}`, { type: 'soon', event: e });
+              });
+            return tasks.sort((a, b) => a.at - b.at);
+          }
+
+          // splitForDiscord: Discordの1メッセージ上限(2000文字)を超えないように行単位で分割する純関数。
+          // 1行だけで上限を超える場合はその行を途中で切る(無限ループにしない)
+          function splitForDiscord(content) {
+            const chunks = [];
+            let current = '';
+            String(content).split('\n').forEach((line) => {
+              let rest = line;
+              while (rest.length > DISCORD_MAX_CHARS) {
+                if (current) { chunks.push(current); current = ''; }
+                chunks.push(rest.slice(0, DISCORD_MAX_CHARS));
+                rest = rest.slice(DISCORD_MAX_CHARS);
+              }
+              const candidate = current ? `${current}\n${rest}` : rest;
+              if (candidate.length > DISCORD_MAX_CHARS) { chunks.push(current); current = rest; }
+              else current = candidate;
+            });
+            if (current) chunks.push(current);
+            return chunks.length ? chunks : [''];
+          }
+
+          // postOnce: Discordへ1通送る。429(送りすぎ)はRetry-Afterに従って、5xxは間隔を空けてリトライする
+          async function postOnce(content) {
+            let lastError = null;
+            for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+              try {
+                const res = await fetch(WEBHOOK, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content }),
+                });
+                if (res.ok) return;
+                if (res.status === 429) {
+                  const retryAfter = Number(res.headers.get('retry-after')) || 5;
+                  console.warn(`Discordから送りすぎと言われたため${retryAfter}秒待ちます`);
+                  await sleep(retryAfter * 1000);
+                  lastError = new Error('Discordへの送信に失敗しました(429)');
+                  continue;
+                }
+                lastError = new Error(`Discordへの送信に失敗しました(${res.status})`);
+                if (res.status < 500) throw lastError; // 400番台(URL間違い等)は何度やっても直らない
+              } catch (e) {
+                lastError = e;
+                if (/\(4\d\d\)/.test(e.message)) throw e;
+              }
+              console.warn(`Discordへの送信に失敗しました(${attempt}/${MAX_RETRY})`);
+              if (attempt < MAX_RETRY) await sleep(RETRY_WAIT_MS * attempt);
+            }
+            throw lastError;
+          }
+
+          // postDiscord: 分割してから送る。DRY_RUNのときも同じ分割を通してから表示する
+          // (テストが実際の送信単位を検査できるようにするため)
+          async function postDiscord(content) {
+            const chunks = splitForDiscord(content);
+            if (DRY_RUN) {
+              chunks.forEach((chunk) => console.log('--- DRY RUN(送信内容) ---\n' + chunk));
+              return;
+            }
+            if (!WEBHOOK) throw new Error('LUADULE_WEBHOOK が設定されていません');
+            for (const chunk of chunks) await postOnce(chunk);
+          }
+
+          // sendDigest: 朝/昼/夜のダイジェストを送る。夜は対象が無ければ送らない(戻り値false)
+          async function sendDigest(data, mode, dateStr) {
+            const name = (data.settings && data.settings.oshiName) || '推し';
+            if (mode === 'evening') {
+              const lines = buildEvening(data, dateStr);
+              if (!lines.length) { console.log('夜の通知対象がないため送信をスキップしました'); return false; }
+              await postDiscord(`🌙 **${name}ジュール 夜の通知**\n` + lines.join('\n'));
+              console.log('夜の通知を送信しました');
+              return true;
+            }
+            const label = mode === 'morning' ? '朝' : '昼';
+            const icon = mode === 'morning' ? '🌸' : '🍙';
+            const lines = buildDaily(data, dateStr, mode === 'morning');
+            await postDiscord(`${icon} **${name}ジュール ${fmtMD(dateStr)}(${weekday(dateStr)}) ${label}の通知**\n` + lines.join('\n'));
+            console.log(`${label}の通知を送信しました`);
+            return true;
+          }
+
+          // runTask: 1つのタスクを実行する。
+          // ⏰は「遅れて起動したときに、もう始まっている予定へ『あと約0分』と送る」のを防ぐため、
+          // 予定時刻から SOON_STALE_MIN 分以上遅れていたら送らずに捨てる(ダイジェストは遅れても送る価値があるので送る)
+          async function runTask(task, nowMs) {
+            if (task.type === 'digest') return sendDigest(task.data, task.mode, task.dateStr);
+            const lateMin = Math.round((nowMs - task.at) / 60000);
+            if (lateMin > SOON_STALE_MIN) {
+              console.log(`⏰リマインドを${lateMin}分遅れのため送信しませんでした`);
+              return false;
+            }
+            await postDiscord(`⏰ **もうすぐ始まります!**\n` + soonLine(task.event, nowMs));
+            console.log('30分前リマインドを送信しました');
+            return true;
+          }
+
+          // task2label: ログ用の短い説明。
+          // このリポジトリは公開されており、Actionsのログは誰でも読めるため、
+          // 予定のタイトル・メモなど中身が分かる情報はログに一切出さない(v4での修正点)
+          function task2label(t) {
+            if (t.type === 'digest') return `${t.mode}のダイジェスト`;
+            return '開始30分前のリマインド';
           }
 
           // --- main ---
-          const now = jstNow();
-          const today = toDateStr(now);
-          const hour = now.getUTCHours();     // JSTの時
-          const minute = now.getUTCMinutes(); // JSTの分
           try {
-            const data = await decryptData(await fetchEncryptedPayload(), PASSPHRASE);
-            const settings = data.settings || {};
-            const name = settings.oshiName || '推し';
-            const morningHour = settingHour(settings.notifyMorningHour, DEFAULT_MORNING_HOUR);
-            const noonHour = settingHour(settings.notifyNoonHour, DEFAULT_NOON_HOUR);
-            const eveningHour = settingHour(settings.notifyEveningHour, DEFAULT_EVENING_HOUR);
+            const startNow = jstNow();
+            const ws = windowStartOf(startNow);
+            const we = ws + WINDOW_HOURS * 3600 * 1000;
 
-            // 1) ダイジェスト(各時刻の最初の起動=分が30未満のときだけ)
-            let digest = '';
-            if (FORCE_MODE) digest = FORCE_MODE;
-            else if (minute < 30 && hour === morningHour) digest = 'morning';
-            else if (minute < 30 && hour === noonHour) digest = 'noon';
-            else if (minute < 30 && hour === eveningHour) digest = 'evening';
+            // 手動実行(workflow_dispatch)は時刻に関係なく朝の通知を1回だけ送って終了する
+            if (FORCE_MODE) {
+              const data = await loadData();
+              await sendDigest(data, FORCE_MODE, toDateStr(startNow));
+              console.log('手動実行のため1回だけ送信して終了しました');
+            } else {
+              console.log(`担当する枠: ${fmtClock(ws)} 〜 ${fmtClock(we)}(現在 ${fmtClock(startNow.getTime())})`);
+              const sent = new Set();
+              const failures = [];
+              let loops = 0;
+              let loopedToEnd = false;
+              while (loops++ < MAX_LOOPS) {
+                const nowMs = jstNow().getTime();
+                if (nowMs >= we) { console.log('枠の終わりに達したので終了します'); break; }
 
-            let sent = false;
-            if (digest === 'morning' || digest === 'noon') {
-              const label = digest === 'morning' ? '朝' : '昼';
-              const icon = digest === 'morning' ? '🌸' : '🍙';
-              await postDiscord(`${icon} **${name}ジュール ${fmtMD(today)}(${weekday(today)}) ${label}の通知**\n` + buildDaily(data, today).join('\n'));
-              console.log(`${label}の通知を送信しました`);
-              sent = true;
-            } else if (digest === 'evening') {
-              const lines = buildEvening(data, today);
-              if (lines.length) {
-                await postDiscord(`🌙 **${name}ジュール 夜の通知**\n` + lines.join('\n'));
-                console.log('夜の通知を送信しました');
-                sent = true;
-              } else {
-                console.log('夜の通知対象がないため送信をスキップしました');
+                // 送信の直前に毎回読み直す(=通知と同じタイミングで更新確認)
+                const data = await loadData();
+                const tasks = buildTasks(data, ws, we).map((t) => ({ ...t, data }));
+
+                if (PLAN_ONLY) {
+                  console.log('--- 枠内のタスク一覧(PLAN_ONLY) ---');
+                  tasks.forEach((t) => console.log(`  ${fmtClock(t.at)} ${t.type}${t.mode ? `(${t.mode})` : ''} key=${t.key}`));
+                  break;
+                }
+
+                const due = tasks.filter((t) => t.at <= nowMs && !sent.has(t.key));
+                for (const task of due) {
+                  // 1件の失敗でこの枠の残り全部を失わないよう、タスク単位でエラーを捕まえる。
+                  // (通信の一時的な失敗は postDiscord / loadData 側でリトライ済み)
+                  try {
+                    await runTask(task, nowMs);
+                  } catch (taskErr) {
+                    failures.push(`${task2label(task)}: ${taskErr.message}`);
+                    console.error(`${task2label(task)}の送信に失敗しました: ${taskErr.message}`);
+                  }
+                  sent.add(task.key); // 送信済み(夜のスキップ・失敗含む)は同じ枠で二度と対象にしない
+                }
+
+                const next = tasks.find((t) => t.at > nowMs && !sent.has(t.key));
+                if (!next) { console.log('この枠で送るものは残っていません。終了します'); break; }
+                const waitMs = next.at - jstNow().getTime();
+                console.log(`次は ${fmtClock(next.at)}(${task2label(next)})。約${Math.max(0, Math.round(waitMs / 60000))}分待機します`);
+                if (waitMs > 0) await sleep(waitMs);
+                loopedToEnd = loops >= MAX_LOOPS;
+              }
+              if (loopedToEnd) console.warn('タスク数の上限に達したため打ち切りました');
+              // 個別に失敗したタスクがあれば、最後にまとめて1通だけ知らせる(内容は出さない)
+              if (failures.length) {
+                try { await postDiscord(`⚠ ルアジュール通知の一部が送れませんでした(${failures.length}件)`); } catch (e2) { console.error(e2.message); }
+                process.exitCode = 1;
               }
             }
-
-            // 2) 開始約30分前の⏰リマインド(手動実行時はスキップ)
-            if (!FORCE_MODE) {
-              const soon = buildSoon(data, now.getTime(), today);
-              if (soon.length) {
-                await postDiscord(`⏰ **もうすぐ始まります!**\n` + soon.join('\n'));
-                console.log('30分前リマインドを送信しました');
-                sent = true;
-              }
-            }
-
-            if (!sent) console.log(`現在${hour}時${minute}分(JST)。送信対象なし(朝${morningHour}/昼${noonHour}/夜${eveningHour}時)`);
           } catch (e) {
             console.error('通知処理でエラー:', e.message);
             try { await postDiscord(`⚠ ルアジュール通知でエラーが発生しました: ${e.message}`); } catch (e2) { console.error(e2.message); }
