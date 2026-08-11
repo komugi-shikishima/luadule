@@ -118,9 +118,18 @@ h1,h2,h3{ margin:0; }
   background:#fff; padding:4px; display:flex; flex-direction:column; align-items:stretch;
   text-align:left; position:relative; min-width:0; overflow:hidden;
 }
+/* 過ぎた日(v39)。薄くしたうえで彩度も落とし、これから先の日と見分けやすくする。
+   .outside(前後月の日)の指定を後ろに置いて、そちらの透明度を優先させている */
+.day-cell.past{ opacity:0.55; filter:saturate(0.3); }
 .day-cell.outside{ opacity:0.4; }
 .day-cell.today{ border:2px solid var(--today-border); }
-.day-cell-top{ display:flex; align-items:center; justify-content:space-between; }
+.day-cell-top{ display:flex; align-items:flex-start; justify-content:space-between; gap:2px; }
+/* マス右上のバッジ置き場(v39)。シフトと申請不可が両方ある日は縦に積んで横にはみ出さないようにする */
+.day-badges{ display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:0; }
+.blocked-badge{
+  font-size:0.58rem; font-weight:700; padding:1px 4px; border-radius:8px;
+  color:#5f5550; background:#e0dcd9; border:1px solid #c9c3bf; white-space:nowrap;
+}
 .day-num{ font-size:0.85rem; font-weight:600; }
 .shift-badge{
   font-size:0.62rem; font-weight:700; padding:1px 5px; border-radius:8px; color:#fff; background:var(--secondary-dark);
@@ -199,6 +208,13 @@ h1,h2,h3{ margin:0; }
   background:#fff;
 }
 .shift-btn.active{ border-color:var(--primary-dark); background:var(--primary-light); font-weight:700; }
+/* FB通話の申請不可日トグル(v39)。自分専用の印なので、テーマ色ではなく落ち着いたグレー系にする */
+.blocked-picker{ margin-top:12px; }
+.blocked-btn{
+  width:100%; min-height:44px; padding:0 12px; border:2px solid var(--border); border-radius:var(--radius-md);
+  background:#fff; color:var(--text-muted);
+}
+.blocked-btn.active{ border-color:#c9c3bf; background:#efebe8; color:var(--text); font-weight:700; }
 
 /* event list */
 .day-events h3, .shift-picker h3{ margin-bottom:8px; font-size:0.95rem; color:var(--text-muted); }
@@ -547,6 +563,10 @@ function getDefaultState() {
     },
     events: [],
     shifts: {},
+    // blockedDays: FB通話の申請ができない日(v39)。{ "YYYY-MM-DD": { updatedAt, deleted } }。
+    // shiftsと同じ「日付をキーにしたマップ」形式で、同期・マージ・90日パージも同じ扱いをする。
+    // **完全に自分専用**。公開ペイロード・共有画像・Discord通知のいずれにも出さない
+    blockedDays: {},
   };
 }
 
@@ -575,6 +595,8 @@ function migrateData(raw) {
   const settings = { ...base.settings, ...(raw.settings || {}) };
   const events = Array.isArray(raw.events) ? raw.events.map(normalizeEvent) : [];
   const shifts = raw.shifts && typeof raw.shifts === 'object' ? raw.shifts : {};
+  // blockedDaysを持たない旧データは空のマップを補う(v39)
+  const blockedDays = raw.blockedDays && typeof raw.blockedDays === 'object' ? raw.blockedDays : {};
   if (settings.membersPublicMigrated !== true) {
     const migratedEvents = events.map((ev) => {
       if (ev && ev.category === 'members' && ev.public === true) {
@@ -587,9 +609,10 @@ function migrateData(raw) {
       settings: { ...settings, membersPublicMigrated: true },
       events: migratedEvents,
       shifts,
+      blockedDays,
     };
   }
-  return { version: 1, settings, events, shifts };
+  return { version: 1, settings, events, shifts, blockedDays };
 }
 
 // purgeOldTombstones: 論理削除から90日を過ぎたデータを物理削除する純関数
@@ -601,7 +624,12 @@ function purgeOldTombstones(data, now) {
     const s = data.shifts[key];
     if (!(s && s.deleted && (s.updatedAt || 0) < cutoff)) shifts[key] = s;
   });
-  return { ...data, events, shifts };
+  const blockedDays = {};
+  Object.keys(data.blockedDays || {}).forEach((key) => {
+    const b = data.blockedDays[key];
+    if (!(b && b.deleted && (b.updatedAt || 0) < cutoff)) blockedDays[key] = b;
+  });
+  return { ...data, events, shifts, blockedDays };
 }
 
 function loadState() {
@@ -695,6 +723,14 @@ function todayAgenda(targetState, today) {
   const shiftRaw = (targetState.shifts || {})[today];
   const shift = (shiftRaw && !shiftRaw.deleted) ? shiftRaw : null;
   return { dateStr: today, events, shift };
+}
+
+// isBlockedDay: その日がFB通話の申請不可日かどうかを判定する純関数(v39)。
+// 削除済み(deleted)は不可日ではないものとして扱う。null/未定義安全
+function isBlockedDay(targetState, dateStr) {
+  const map = (targetState && targetState.blockedDays) || {};
+  const entry = map[dateStr];
+  return !!(entry && !entry.deleted);
 }
 
 // isSharableEvent: 共有画像に載せてよい予定かどうかを判定する純関数(v34で共通化)。
@@ -1035,6 +1071,8 @@ function mergeData(local, remote) {
 
   const events = mergeEventArrays(local.events, remote.events);
   const shifts = mergeShiftMaps(local.shifts, remote.shifts);
+  // 申請不可日もシフトと同じ「updatedAtが新しい方が勝つ」規則で統合する(v39)
+  const blockedDays = mergeShiftMaps(local.blockedDays, remote.blockedDays);
   let settings;
   if (remote.settings && local.settings) {
     settings = (remote.settings.updatedAt || 0) > (local.settings.updatedAt || 0) ? remote.settings : local.settings;
@@ -1042,7 +1080,7 @@ function mergeData(local, remote) {
     settings = remote.settings || local.settings || getDefaultState().settings;
   }
 
-  return { version: 1, settings, events, shifts };
+  return { version: 1, settings, events, shifts, blockedDays };
 }
 
 function cleanupNotifiedSet(notifiedSet, today) {
@@ -1933,6 +1971,8 @@ function renderDayCell(cell, today) {
   const shift = state.shifts[cell.dateStr];
   const classes = ['day-cell'];
   if (!cell.inMonth) classes.push('outside');
+  // 過ぎた日はひと目で分かるように薄く・彩度を落とす(v39。表示だけの変更でデータには触れない)
+  if (compareDates(cell.dateStr, today) < 0) classes.push('past');
   if (cell.dateStr === today) classes.push('today');
   const maxChips = 3;
   const shown = normalEvents.slice(0, maxChips);
@@ -1941,7 +1981,10 @@ function renderDayCell(cell, today) {
     <button type="button" class="${classes.join(' ')}" data-action="open-day" data-date="${cell.dateStr}">
       <div class="day-cell-top">
         <span class="day-num">${dayNum}</span>
-        ${shift && !shift.deleted ? renderShiftBadge(shift) : ''}
+        <span class="day-badges">
+          ${shift && !shift.deleted ? renderShiftBadge(shift) : ''}
+          ${isBlockedDay(state, cell.dateStr) ? '<span class="blocked-badge">申不可</span>' : ''}
+        </span>
       </div>
       <div class="chip-list">
         ${shown.map((ev) => renderChip(ev)).join('')}
@@ -1990,6 +2033,7 @@ function renderDaySheet() {
   const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
   const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
   const shift = state.shifts[dateStr];
+  const blocked = isBlockedDay(state, dateStr);
   const hasNormal = normalEvents.length > 0;
   const hasLongTerm = longTermEvents.length > 0;
   return `
@@ -2001,6 +2045,12 @@ function renderDaySheet() {
       <section class="shift-picker">
         <h3>シフト</h3>
         <div class="shift-buttons">${renderShiftButtons(shift)}</div>
+      </section>
+      <section class="blocked-picker">
+        <h3>FB通話</h3>
+        <button type="button" class="blocked-btn${blocked ? ' active' : ''}" data-action="toggle-blocked" data-date="${dateStr}" aria-pressed="${blocked ? 'true' : 'false'}">
+          ${blocked ? '🚫 申請不可日にしています' : '申請不可日にする'}
+        </button>
       </section>
       <section class="day-events">
         <h3>予定</h3>
@@ -2569,6 +2619,20 @@ function handleSetShift(code) {
     }
     return { shifts: nextShifts };
   });
+}
+
+// handleToggleBlockedDay: FB通話の申請不可日を入り切りする(v39)。
+// シフトと同じく「削除は物理削除せず deleted:true の印を残す」方式なので、
+// 2台で使っていても「片方で外したのに復活する」ことが起きない
+function handleToggleBlockedDay(dateStr) {
+  const target = dateStr || uiState.selectedDate;
+  if (!target) return;
+  const now = Date.now();
+  const nextBlocked = !isBlockedDay(state, target);
+  setState((prev) => ({
+    blockedDays: { ...(prev.blockedDays || {}), [target]: { updatedAt: now, deleted: !nextBlocked } },
+  }));
+  showToast(nextBlocked ? '申請不可日にしました' : '申請不可日を解除しました');
 }
 
 // drawRoundedRect: canvasに角丸矩形のパスを作る補助関数(fill/strokeは呼び出し側で行う)
@@ -3171,6 +3235,9 @@ function handleAction(el) {
     case 'set-shift':
       handleSetShift(el.dataset.code);
       break;
+    case 'toggle-blocked':
+      handleToggleBlockedDay(el.dataset.date);
+      break;
     case 'set-kind': {
       const kind = el.dataset.value;
       // kind は必ず 'oshi' か 'personal' の完全一致で探す(kind:'both' の記念日は既定選択にしない)
@@ -3498,6 +3565,7 @@ if (typeof window !== 'undefined') {
     fixDraftLongTerm,
     listLongTermEvents,
     listMonthlyEvents,
+    isBlockedDay,
     isSharableEvent,
     buildShareLines,
     listOnSaleShareEvents,
