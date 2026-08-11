@@ -152,7 +152,17 @@ h1,h2,h3{ margin:0; }
 
 .state-box{ margin:40px 16px; text-align:center; color:var(--text-muted); }
 .state-box p{ margin:6px 0; }
-.footer-note{ text-align:center; color:var(--text-muted); font-size:0.76rem; margin:24px 16px 0; }
+/* ページ末尾の注意書き(v38)。読み飛ばされないよう、白いカードに枠線と見出しを付けて
+   本文も本文色で表示する。特に押さえてほしい語だけ .note-strong で強調する */
+.footer-note{
+  margin:24px 16px 0; background:#fff; border:1px solid var(--primary-dark); border-left-width:5px;
+  border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:14px 16px;
+  font-size:0.82rem; line-height:1.75; color:var(--text);
+}
+.footer-note-title{ font-weight:700; color:var(--primary-dark); font-size:0.86rem; margin-bottom:6px; }
+.footer-note p{ margin-bottom:6px; }
+.footer-note p:last-child{ margin-bottom:0; }
+.note-strong{ font-weight:700; color:var(--primary-dark); }
 </style>
 </head>
 <body>
@@ -611,7 +621,7 @@ function renderApp() {
     ${renderLongTermSection()}
     ${renderCalendar()}
     ${renderSheetOverlay()}
-    <p class="footer-note">この予定は公開設定されたものだけを表示しています。編集はできません。</p>
+    ${renderFooterNote()}
   `;
 }
 
@@ -783,6 +793,36 @@ function renderDayCell(cell, today, events) {
 function renderChip(ev) {
   const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category] || '#b8b8b8');
   return `<div class="chip" style="background:${color}">${escapeHtml(ev.title)}</div>`;
+}
+
+// renderFooterNote: ページ末尾の注意書き(v38で全面的に書き換え)。
+// 閲覧者に必ず伝えたいのは次の4点:
+//  1. 公式ではなく、ファンが個人で作っている非公式のカレンダーであること
+//  2. 出典は一般に公開されている情報のみであること
+//  3. FANBOXなどの限定公開情報は載せていないこと
+//  4. 限定配信は通常配信で言及があった分だけを、原則として配信終了後に反映すること
+// 文言はユーザー確定済み。**内容を勝手に変えない**(表現を変えるときは必ず確認を取る)。
+// 固定文なのでエスケープ不要だが、将来ここに変数を差し込む場合は必ずescapeHtmlを通すこと
+function renderFooterNote() {
+  return `
+    <div class="footer-note">
+      <div class="footer-note-title">このカレンダーについて</div>
+      <p>
+        このカレンダーは、一般に公開されている情報のみをもとに、いちファンが個人で作成している
+        <span class="note-strong">非公式</span>のものです。
+      </p>
+      <p>
+        <span class="note-strong">FANBOXなどの限定公開情報は掲載していません。</span>
+        限定配信については、通常配信で言及があった日程のみを、
+        <span class="note-strong">原則として配信終了後に反映</span>しています。
+      </p>
+      <p>
+        内容の正確性を保証するものではありません。お出かけやご購入の前に、
+        <span class="note-strong">必ず公式の告知をご確認ください。</span>
+      </p>
+      <p>表示専用のページのため、編集はできません。</p>
+    </div>
+  `;
 }
 
 // renderLegend: カテゴリの色の凡例。v35で操作行(renderNavBar)の中へ移動し、
