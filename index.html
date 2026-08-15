@@ -194,6 +194,17 @@ button.today-reminder:active{ filter:brightness(0.96); }
   background:rgba(255,255,255,0.8); padding:1px 8px; border-radius:6px; font-weight:700;
   font-size:0.72rem; letter-spacing:1px; transform:rotate(-12deg); pointer-events:none;
 }
+/* 終了したイベントのハンコ(v41)。購入済ハンコと同じ形・同じ位置で、色だけ落ち着いたグレーにする
+   (赤は「購入済」の意味で既に使っているので、並んだときに見分けられるようにするため) */
+.finished-stamp{
+  position:absolute; top:-8px; right:6px; border:2px solid #8a8a8a; color:#6f6f6f;
+  background:rgba(255,255,255,0.85); padding:1px 8px; border-radius:6px; font-weight:700;
+  font-size:0.72rem; letter-spacing:1px; transform:rotate(-12deg); pointer-events:none;
+}
+.longterm-item.is-finished{ opacity:0.55; }
+/* 長いタイトルがハンコの下に潜り込んで読みにくくならないよう、ハンコの幅ぶんだけ右を空ける。
+   84pxは「イベント終了」6文字+左右の余白+枠線の実測値。文言を変えるならこの値も見直すこと */
+.longterm-item.is-finished .longterm-item-title{ padding-right:84px; }
 
 /* sheet */
 .sheet-backdrop{
@@ -933,6 +944,20 @@ function listMonthlyEvents(targetState, year, month) {
     .filter((ev) => ev && !ev.deleted && ev.category === 'event' && isEventInMonth(ev, year, month))
     .slice()
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
+}
+
+// isEventFinished: その予定が「もう終わったか」を判定する純関数(v41)。
+// 終了日(endDate。無ければstartDate)が today より前なら終了。**最終日当日は終了扱いにしない**
+// (「📌 販売期間中 一覧」が最終日当日まで表示し続けるのと同じ基準に揃える)。
+// 記念日(anniversary)は毎年繰り返す予定なので、過去日でも常に false を返す。
+// 「今月のイベント予定」の"イベント終了"スタンプ表示にだけ使う(データには一切触れない表示専用の判定)。
+// ev が無い・日付が無い・today が空のときは false(判断できないものにスタンプは押さない)
+function isEventFinished(ev, today) {
+  if (!ev || !today) return false;
+  if (ev.category === 'anniversary') return false;
+  const endDate = ev.endDate || ev.startDate;
+  if (!endDate) return false;
+  return compareDates(endDate, today) < 0;
 }
 
 // buildPublicPayload: 公開Gistに書き出す平文ペイロードを組み立てる純関数(§12.3)
@@ -1901,7 +1926,9 @@ function renderTodaySection() {
 
 // renderMonthlyEventSection: 「📌 販売期間中 一覧」のすぐ上に出す「今月のイベント予定」枠。
 // 表示中の月に重なる category==='event' の予定を表示する(longTermかどうかは問わない)。
-// 該当0件の月はセクションごと非表示。タップでその予定の個別詳細シートを開く
+// 該当0件の月はセクションごと非表示。タップでその予定の個別詳細シートを開く。
+// この一覧のみ showFinished:true を渡し、終了した予定に"イベント終了"のハンコ+薄色表示を
+// 有効にする(v41。他2箇所の一覧では出さない。終了した予定が残り続けるのはこの枠だけのため)
 function renderMonthlyEventSection() {
   const items = listMonthlyEvents(state, uiState.year, uiState.month);
   if (!items.length) return '';
@@ -1914,7 +1941,7 @@ function renderMonthlyEventSection() {
     <section class="longterm-section">
       <h2 class="longterm-title">${escapeHtml(heading)}</h2>
       <div class="longterm-list">
-        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+        ${items.map((ev) => renderLongTermItem(ev, { showFinished: true })).join('')}
       </div>
     </section>
   `;
@@ -1946,14 +1973,22 @@ function renderLongTermSection() {
 
 // renderLongTermItem: 「今月のイベント予定」「📌 販売期間中 一覧」「📅 今日の予定」の3箇所で共用する一覧アイテム。
 // options.showPurchased が true のとき(=「📌 販売期間中 一覧」からの呼び出しのみ)だけ、
-// 購入済みチェックボックス・赤いハンコ・薄色表示を追加する。タップ領域は内側の
-// <button class="longterm-item-tap"> に限定し(外側はHTML的に正しい<div>)、チェックボックスは
-// その外の<span>に置くことで、チェック操作がアイテム全体のタップ(open-event)に吸われないようにする
+// 購入済みチェックボックス・赤いハンコ・薄色表示を追加する。
+// options.showFinished が true のとき(=「今月のイベント予定」からの呼び出しのみ。v41)だけ、
+// 終了した予定に"イベント終了"のハンコ+薄色表示を追加する(isEventFinishedで判定)。
+// この2つを別々のオプションにしているのは、それぞれ出す枠が1箇所ずつで異なるため
+// (「📌 販売期間中 一覧」は終了した予定がそもそも一覧から消えるのでスタンプ不要、
+//  「今月のイベント予定」は過ぎた月を見返せるよう残る仕様なのでスタンプが要る)。
+// タップ領域は内側の <button class="longterm-item-tap"> に限定し(外側はHTML的に正しい<div>)、
+// チェックボックスはその外の<span>に置くことで、チェック操作がアイテム全体のタップ(open-event)に
+// 吸われないようにする。ハンコは pointer-events:none なのでタップの邪魔をしない
 function renderLongTermItem(ev, options) {
   const opts = options || {};
   const showPurchased = opts.showPurchased === true;
+  const showFinished = opts.showFinished === true;
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
   const purchased = showPurchased && ev.purchased === true;
+  const finished = showFinished && isEventFinished(ev, todayStr());
   const purchaseHtml = showPurchased
     ? `
       <span class="longterm-purchase">
@@ -1964,9 +1999,10 @@ function renderLongTermItem(ev, options) {
       </span>
     `
     : '';
-  const stampHtml = purchased ? `<span class="purchased-stamp">購入済</span>` : '';
+  const stampHtml = (purchased ? `<span class="purchased-stamp">購入済</span>` : '')
+    + (finished ? `<span class="finished-stamp">イベント終了</span>` : '');
   return `
-    <div class="longterm-item${purchased ? ' is-purchased' : ''}">
+    <div class="longterm-item${purchased ? ' is-purchased' : ''}${finished ? ' is-finished' : ''}">
       <button type="button" class="longterm-item-tap" data-action="open-event" data-id="${escapeHtml(ev.id)}">
         <span class="longterm-bar" style="background:var(${cat.colorVar})"></span>
         <span class="longterm-body">
@@ -3604,6 +3640,7 @@ if (typeof window !== 'undefined') {
     fixDraftLongTerm,
     listLongTermEvents,
     listMonthlyEvents,
+    isEventFinished,
     isBlockedDay,
     isSharableEvent,
     buildShareLines,

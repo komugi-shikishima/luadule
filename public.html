@@ -116,9 +116,19 @@ button.today-reminder:active{ filter:brightness(0.96); }
 .longterm-list{ display:flex; flex-direction:column; gap:6px; }
 .today-date-label{ font-size:0.78rem; font-weight:400; color:var(--text-muted); white-space:nowrap; }
 .longterm-item{
-  display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
+  position:relative; display:flex; align-items:stretch; gap:8px; width:100%; min-height:44px; border:none; text-align:left;
   background:var(--bg); border-radius:var(--radius-sm); padding:6px 8px;
 }
+/* 終了したイベントのハンコ(v41。本体index.htmlと同じ見た目) */
+.finished-stamp{
+  position:absolute; top:-8px; right:6px; border:2px solid #8a8a8a; color:#6f6f6f;
+  background:rgba(255,255,255,0.85); padding:1px 8px; border-radius:6px; font-weight:700;
+  font-size:0.72rem; letter-spacing:1px; transform:rotate(-12deg); pointer-events:none;
+}
+.longterm-item.is-finished{ opacity:0.55; }
+/* 長いタイトルがハンコの下に潜り込んで読みにくくならないよう、ハンコの幅ぶんだけ右を空ける。
+   84pxは「イベント終了」6文字+左右の余白+枠線の実測値。文言を変えるならこの値も見直すこと */
+.longterm-item.is-finished .longterm-item-title{ padding-right:84px; }
 .longterm-bar{ width:5px; border-radius:3px; flex-shrink:0; }
 .longterm-body{ display:flex; flex-direction:column; gap:2px; min-width:0; }
 .longterm-item-title{ font-size:0.92rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -533,6 +543,20 @@ function listMonthlyEvents(events, year, month) {
     .sort((a, b) => compareDates(a.startDate, b.startDate) || compareDates(a.endDate, b.endDate));
 }
 
+// isEventFinished: その予定が「もう終わったか」を判定する純関数(v41。本体index.htmlの同名関数と同一仕様)。
+// 終了日(endDate。無ければstartDate)が today より前なら終了。**最終日当日は終了扱いにしない**
+// (「📌 販売期間中 一覧」が最終日当日まで表示し続けるのと同じ基準に揃える)。
+// 記念日(anniversary)は毎年繰り返す予定なので、過去日でも常に false を返す。
+// 「今月のイベント予定」の"イベント終了"スタンプ表示にだけ使う表示専用の判定。
+// ev が無い・日付が無い・today が空のときは false(判断できないものにスタンプは押さない)
+function isEventFinished(ev, today) {
+  if (!ev || !today) return false;
+  if (ev.category === 'anniversary') return false;
+  const endDate = ev.endDate || ev.startDate;
+  if (!endDate) return false;
+  return compareDates(endDate, today) < 0;
+}
+
 // eventDomId / findEventByDomId: 公開データのidが空文字の可能性があるため、
 // 空idのイベントは配列内インデックスをフォールバックのdata-idとして使う(open-event側で確実に同じイベントを引く)
 function eventDomId(ev, events) {
@@ -755,7 +779,7 @@ function renderMonthlyEventSection() {
     <section class="longterm-section">
       <h2 class="longterm-title">${escapeHtml(heading)}</h2>
       <div class="longterm-list">
-        ${items.map((ev) => renderLongTermItem(ev)).join('')}
+        ${items.map((ev) => renderLongTermItem(ev, { showFinished: true })).join('')}
       </div>
     </section>
   `;
@@ -777,17 +801,25 @@ function renderLongTermSection() {
   `;
 }
 
-function renderLongTermItem(ev) {
+// renderLongTermItem: 一覧アイテム。options.showFinished が true のとき(=「今月のイベント予定」からの
+// 呼び出しのみ。v41)だけ、終了した予定に"イベント終了"のハンコ+薄色表示を付ける(本体index.htmlと同一仕様)。
+// ハンコは pointer-events:none なので、アイテム全体のタップ(open-event)の邪魔をしない
+function renderLongTermItem(ev, options) {
+  const opts = options || {};
+  const showFinished = opts.showFinished === true;
+  const finished = showFinished && isEventFinished(ev, todayStr());
   const color = safeColor(appState.payload.colors[ev.category], DEFAULT_COLORS[ev.category] || '#b8b8b8');
   const catLabel = CATEGORY_LABELS[ev.category] || ev.category;
   const domId = eventDomId(ev, appState.payload.events);
+  const stampHtml = finished ? `<span class="finished-stamp">イベント終了</span>` : '';
   return `
-    <button type="button" class="longterm-item" data-action="open-event" data-id="${escapeHtml(domId)}">
+    <button type="button" class="longterm-item${finished ? ' is-finished' : ''}" data-action="open-event" data-id="${escapeHtml(domId)}">
       <span class="longterm-bar" style="background:${color}"></span>
       <span class="longterm-body">
         <span class="longterm-item-title">${escapeHtml(ev.title)}</span>
         <span class="longterm-item-schedule">${escapeHtml(catLabel)}・${escapeHtml(formatEventScheduleWithDate(ev))}</span>
       </span>
+      ${stampHtml}
     </button>
   `;
 }
