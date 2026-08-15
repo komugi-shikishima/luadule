@@ -103,9 +103,19 @@ h1,h2,h3{ margin:0; }
 /* today reminder(今日の予定カード内・最終日系のお知らせのみ。v32) */
 .today-reminder-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
 .today-reminder{
+  display:flex; align-items:center; gap:8px; width:100%; box-sizing:border-box;
   background:var(--primary-light); border-left:4px solid var(--primary-dark); padding:8px 10px;
   border-radius:var(--radius-sm); font-size:0.88rem; overflow-wrap:anywhere;
 }
+.today-reminder-text{ flex:1; min-width:0; }
+/* タップで予定の詳細を開けるお知らせ(v40)。見た目は従来のお知らせのまま、
+   ボタン既定の枠線・書体・中央寄せだけ打ち消し、右端の「›」でタップできることを示す */
+button.today-reminder{
+  min-height:44px; border-top:none; border-right:none; border-bottom:none;
+  text-align:left; font:inherit; font-size:0.88rem; color:inherit; cursor:pointer;
+}
+button.today-reminder:active{ filter:brightness(0.96); }
+.today-reminder-chevron{ flex:none; color:var(--text-muted); font-size:1.1rem; line-height:1; }
 
 /* calendar */
 .calendar{ margin:16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:12px; }
@@ -1039,6 +1049,25 @@ function filterDeadlineReminders(reminders) {
   return reminders.filter((r) => r && (r.milestone === 'lastday-eve' || r.milestone === 'lastday'));
 }
 
+// buildTodayReminderViews: 「今日の予定」カード内のお知らせを描画するための表示用データを作る純関数(v40)。
+// 各お知らせについて、元になった予定が今も state に存在する(削除されていない)かを確認し、
+// 存在するときだけ tappable:true + eventId を持たせる。呼び出し側はこれを見て、タップで
+// 個別詳細シートを開ける <button data-action="open-event"> にするか、従来どおり文言だけの
+// <div> にするかを決める。元イベントが無い場合(削除済み・シフト由来の shift-tomorrow など)に
+// タップさせると詳細が開かず無反応になるため、ここで確実に振り分ける。
+// 引数は書き換えず新しい配列・新しいオブジェクトを返す。順序は元の配列のまま。
+// reminders が null / 非配列 のときは空配列を返す
+function buildTodayReminderViews(targetState, reminders) {
+  if (!Array.isArray(reminders)) return [];
+  const events = (targetState && targetState.events) || [];
+  return reminders
+    .filter((r) => r)
+    .map((r) => {
+      const ev = r.eventId ? events.find((x) => x && x.id === r.eventId && !x.deleted) : null;
+      return { text: r.text || '', eventId: ev ? ev.id : null, tappable: !!ev };
+    });
+}
+
 function mergeEventArrays(localEvents, remoteEvents) {
   const map = new Map();
   (localEvents || []).forEach((ev) => { if (ev && ev.id) map.set(ev.id, ev); });
@@ -1834,7 +1863,11 @@ function renderNavBar() {
 // お知らせは見出し行の下・シフト行の下・予定リストの上に表示し、filterDeadlineReminders で
 // 最終日系(lastday-eve/lastday)のみに絞る(配信開始・記念日などは今日の予定リスト側と重複するため
 // 表示しない。ブラウザ通知processRemindersは従来通り全種類を通知する)。お知らせが0件なら何も出さず
-// 高さも取らない。予定・シフト・お知らせが全て0件のときだけ「今日の予定はありません」を表示する
+// 高さも取らない。予定・シフト・お知らせが全て0件のときだけ「今日の予定はありません」を表示する。
+// v40: お知らせも他の一覧アイテムと同じくタップで個別詳細シートを開けるようにした。
+// buildTodayReminderViews で「元の予定が今も存在するか」を判定し、存在するものだけ
+// <button data-action="open-event"> にする(存在しないものは従来どおり<div>のまま。
+// タップしても何も起きない見た目を作らないため)
 function renderTodaySection() {
   const today = todayStr();
   const agenda = todayAgenda(state, today);
@@ -1843,12 +1876,18 @@ function renderTodaySection() {
     ? `<div class="today-shift-row">💼 ${escapeHtml(shiftDef.label)}${shiftDef.time ? `(${escapeHtml(shiftDef.time)})` : ''}</div>`
     : '';
   const reminders = filterDeadlineReminders(computeReminders(state, today));
-  const reminderHtml = reminders.length
-    ? `<div class="today-reminder-list">${reminders.map((r) => `<div class="today-reminder">${escapeHtml(r.text)}</div>`).join('')}</div>`
+  const reminderViews = buildTodayReminderViews(state, reminders);
+  const reminderHtml = reminderViews.length
+    ? `<div class="today-reminder-list">${reminderViews.map((r) => (r.tappable
+        ? `<button type="button" class="today-reminder is-tappable" data-action="open-event" data-id="${escapeHtml(r.eventId)}">`
+          + `<span class="today-reminder-text">${escapeHtml(r.text)}</span>`
+          + `<span class="today-reminder-chevron" aria-hidden="true">›</span>`
+          + `</button>`
+        : `<div class="today-reminder"><span class="today-reminder-text">${escapeHtml(r.text)}</span></div>`)).join('')}</div>`
     : '';
   const body = agenda.events.length
     ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
-    : (shiftDef || reminders.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
+    : (shiftDef || reminderViews.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
   return `
     <section class="longterm-section">
       <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
@@ -3583,6 +3622,7 @@ if (typeof window !== 'undefined') {
     validateEventInput,
     computeReminders,
     filterDeadlineReminders,
+    buildTodayReminderViews,
     mergeEventArrays,
     mergeShiftMaps,
     mergeData,
