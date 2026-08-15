@@ -70,9 +70,19 @@ h1,h2,h3{ margin:0; }
 
 .today-reminder-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
 .today-reminder{
+  display:flex; align-items:center; gap:8px; width:100%; box-sizing:border-box;
   background:var(--primary-light); border-left:4px solid var(--primary-dark); padding:8px 10px;
   border-radius:var(--radius-sm); font-size:0.88rem; overflow-wrap:anywhere;
 }
+.today-reminder-text{ flex:1; min-width:0; }
+/* タップで予定の詳細を開けるお知らせ(v40)。見た目は従来のお知らせのまま、
+   ボタン既定の枠線・書体・中央寄せだけ打ち消し、右端の「›」でタップできることを示す */
+button.today-reminder{
+  min-height:44px; border-top:none; border-right:none; border-bottom:none;
+  text-align:left; font:inherit; font-size:0.88rem; color:inherit; cursor:pointer;
+}
+button.today-reminder:active{ filter:brightness(0.96); }
+.today-reminder-chevron{ flex:none; color:var(--text-muted); font-size:1.1rem; line-height:1; }
 
 .calendar{ margin:16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:12px; }
 .weekday-row{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; color:var(--text-muted); font-size:0.82rem; margin-bottom:4px; }
@@ -549,31 +559,37 @@ function findEventByDomId(events, domId) {
 //   today-time : 単日+時刻ありの startDate===今日 → 📺今日◯時〜(新規)
 //   anniversary: occursOnDayが今日に一致する記念日 → 🎉今日は◯◯!(新規)
 // MILESTONE_PRIORITY の順(lastday-eve→lastday→firstday→anniversary→today-time)でソートして返す
+// v40: 各リマインドに domId(eventDomId と同じ形式。idが空なら idx:番号)を持たせるようにした。
+// お知らせをタップして予定の詳細シートを開くために、元イベントを引き直せる必要があるため。
+// 本体index.htmlの computeReminders が eventId を持っているのと同じ役割。既存の
+// milestone / text はそのままなので、この追加で表示や並び順は変わらない
 function computeSimpleReminders(events, today) {
   const tomorrow = addDays(today, 1);
+  const list = events || [];
   const reminders = [];
-  (events || []).forEach((ev) => {
+  list.forEach((ev) => {
     if (!ev || !ev.title || !ev.startDate || !ev.endDate) return;
+    const domId = eventDomId(ev, list);
     // anniversary(記念日): 単日予定のため期間系リマインド(最終日前日/当日/初日)は対象外。
     // occursOnDay で毎年の同月日判定を行い、一致した日にだけ🎉リマインドを出す
     if (ev.category === 'anniversary') {
-      if (occursOnDay(ev, today)) reminders.push({ milestone: 'anniversary', text: `🎉 今日は『${ev.title}』!` });
+      if (occursOnDay(ev, today)) reminders.push({ milestone: 'anniversary', domId, text: `🎉 今日は『${ev.title}』!` });
       return;
     }
     const isPeriod = !!CATEGORY_PERIOD[ev.category];
     const isMultiDay = ev.startDate !== ev.endDate;
     if (isPeriod && isMultiDay && ev.endDate === tomorrow) {
-      reminders.push({ milestone: 'lastday-eve', text: `⚠ 『${ev.title}』は明日が最終日!` });
+      reminders.push({ milestone: 'lastday-eve', domId, text: `⚠ 『${ev.title}』は明日が最終日!` });
     }
     if (isPeriod && isMultiDay && ev.endDate === today) {
-      reminders.push({ milestone: 'lastday', text: `🔔 『${ev.title}』は今日が最終日!` });
+      reminders.push({ milestone: 'lastday', domId, text: `🔔 『${ev.title}』は今日が最終日!` });
     }
     if (isPeriod && isMultiDay && ev.startDate === today) {
-      reminders.push({ milestone: 'firstday', text: `🎪 『${ev.title}』今日から!` });
+      reminders.push({ milestone: 'firstday', domId, text: `🎪 『${ev.title}』今日から!` });
     }
     if (!isPeriod && ev.startDate === today && ev.time) {
       const range = ` ${ev.time}〜${ev.endTime || ''}`;
-      reminders.push({ milestone: 'today-time', text: `📺 『${ev.title}』今日${range}` });
+      reminders.push({ milestone: 'today-time', domId, text: `📺 『${ev.title}』今日${range}` });
     }
   });
   return reminders.sort((a, b) => MILESTONE_PRIORITY[a.milestone] - MILESTONE_PRIORITY[b.milestone]);
@@ -587,6 +603,25 @@ function computeSimpleReminders(events, today) {
 function filterDeadlineReminders(reminders) {
   if (!Array.isArray(reminders)) return [];
   return reminders.filter((r) => r && (r.milestone === 'lastday-eve' || r.milestone === 'lastday'));
+}
+
+// buildTodayReminderViews: 「今日の予定」カード内のお知らせを描画するための表示用データを作る純関数(v40。
+// 本体index.htmlの同名関数と同一の考え方。あちらは state と eventId、こちらは公開データの
+// events配列と domId(idが空なら idx:番号)を使う点だけが違う)。
+// r.domId から元イベントを findEventByDomId で引き直し、見つかったものだけ tappable:true にする。
+// 呼び出し側はこれを見て <button data-action="open-event"> にするか <div> のままにするかを決める。
+// タップしても詳細が開かない「反応しないボタン」を作らないための振り分け。
+// 引数は書き換えず新しい配列・新しいオブジェクトを返す。順序は元の配列のまま。
+// reminders が null / 非配列 のときは空配列を返す
+function buildTodayReminderViews(events, reminders) {
+  if (!Array.isArray(reminders)) return [];
+  const list = events || [];
+  return reminders
+    .filter((r) => r)
+    .map((r) => {
+      const ev = r.domId ? findEventByDomId(list, r.domId) : null;
+      return { text: r.text || '', domId: ev ? r.domId : null, tappable: !!ev };
+    });
 }
 
 /* ---------- 6. state(画面の一時状態のみ。永続化しない) ---------- */
@@ -676,17 +711,26 @@ function renderNavBar() {
 // 公開データにシフトは無いため予定一覧のみを表示する。今日固定(表示中の月に依存しない)。
 // リマインドは見出しの下・予定リストの上に表示し、0件なら何も出さない。
 // 予定が0件でもリマインドがあれば「今日の予定はありません」は出さずリマインドのみ表示する。
-// カード自体は予定・リマインドとも0件でも常に表示する。合言葉の猫の顔文字はこのページには一切出さない
+// カード自体は予定・リマインドとも0件でも常に表示する。合言葉の猫の顔文字はこのページには一切出さない。
+// v40: お知らせも他の一覧アイテムと同じくタップで個別詳細シートを開けるようにした
+// (本体index.htmlと同一仕様)。buildTodayReminderViews で「元の予定が公開データに今もあるか」を
+// 判定し、あるものだけ <button data-action="open-event"> にする
 function renderTodaySection() {
   const today = todayStr();
   const agenda = todayAgenda(appState.payload.events, today);
   const reminders = filterDeadlineReminders(computeSimpleReminders(appState.payload.events, today));
-  const reminderHtml = reminders.length
-    ? `<div class="today-reminder-list">${reminders.map((r) => `<div class="today-reminder">${escapeHtml(r.text)}</div>`).join('')}</div>`
+  const reminderViews = buildTodayReminderViews(appState.payload.events, reminders);
+  const reminderHtml = reminderViews.length
+    ? `<div class="today-reminder-list">${reminderViews.map((r) => (r.tappable
+        ? `<button type="button" class="today-reminder is-tappable" data-action="open-event" data-id="${escapeHtml(r.domId)}">`
+          + `<span class="today-reminder-text">${escapeHtml(r.text)}</span>`
+          + `<span class="today-reminder-chevron" aria-hidden="true">›</span>`
+          + `</button>`
+        : `<div class="today-reminder"><span class="today-reminder-text">${escapeHtml(r.text)}</span></div>`)).join('')}</div>`
     : '';
   const body = agenda.events.length
     ? `<div class="longterm-list">${agenda.events.map((ev) => renderLongTermItem(ev)).join('')}</div>`
-    : (reminders.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
+    : (reminderViews.length ? '' : `<p class="empty-hint">今日の予定はありません</p>`);
   return `
     <section class="longterm-section">
       <h2 class="longterm-title">📅 今日の予定<span class="today-date-label">${escapeHtml(formatDateLabel(agenda.dateStr))}</span></h2>
