@@ -84,6 +84,14 @@ button.today-reminder{
 button.today-reminder:active{ filter:brightness(0.96); }
 .today-reminder-chevron{ flex:none; color:var(--text-muted); font-size:1.1rem; line-height:1; }
 
+/* day notice(日詳細シートの一番上に出す「その日のお知らせ」。v42。本体index.htmlと同じ見た目)。
+   表示専用でタップできないので、ボタン用の指定は持たない */
+.day-notice-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+.day-notice{
+  background:var(--primary-light); border-left:4px solid var(--primary-dark); padding:8px 10px;
+  border-radius:var(--radius-sm); font-size:0.88rem; overflow-wrap:anywhere;
+}
+
 .calendar{ margin:16px; background:#fff; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:12px; }
 .weekday-row{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; color:var(--text-muted); font-size:0.82rem; margin-bottom:4px; }
 .weekday.sun{ color:#e08a9a; }
@@ -629,6 +637,32 @@ function filterDeadlineReminders(reminders) {
   return reminders.filter((r) => r && (r.milestone === 'lastday-eve' || r.milestone === 'lastday'));
 }
 
+// computeDayNotices: カレンダーの日をタップして開く日詳細シートの一番上に出す
+// 「その日のお知らせ」を作る純関数(v42。本体index.htmlの同名関数と同一仕様。
+// あちらは state、こちらは公開データの events 配列を受け取る点だけが違う)。
+// **computeSimpleReminders との違い**: あちらは「今日」が基準で文言も「今日が最終日」になる。
+// こちらは**指定した日(dateStr)そのもの**が基準で、文言も「この日が最終日」「この日から」になる。
+// 出すのは期間もの(CATEGORY_PERIOD)かつ複数日の予定の「最終日」と「初日」だけ。
+// 並びは最終日→初日の順。events が無い・dateStr が空のときは空配列。引数は書き換えない
+function computeDayNotices(events, dateStr) {
+  if (!dateStr) return [];
+  const list = Array.isArray(events) ? events : [];
+  const lastdayNotices = [];
+  const firstdayNotices = [];
+  list.forEach((ev) => {
+    if (!ev || !ev.title || !ev.startDate || !ev.endDate) return;
+    if (!CATEGORY_PERIOD[ev.category]) return;
+    if (ev.startDate === ev.endDate) return; // 単日の期間ものは「最終日」「初日」を出す意味がない
+    if (ev.endDate === dateStr) {
+      lastdayNotices.push({ eventId: ev.id, kind: 'lastday', text: `🔔 『${ev.title}』はこの日が最終日` });
+    }
+    if (ev.startDate === dateStr) {
+      firstdayNotices.push({ eventId: ev.id, kind: 'firstday', text: `🎪 『${ev.title}』はこの日から` });
+    }
+  });
+  return lastdayNotices.concat(firstdayNotices);
+}
+
 // buildTodayReminderViews: 「今日の予定」カード内のお知らせを描画するための表示用データを作る純関数(v40。
 // 本体index.htmlの同名関数と同一の考え方。あちらは state と eventId、こちらは公開データの
 // events配列と domId(idが空なら idx:番号)を使う点だけが違う)。
@@ -931,6 +965,9 @@ function renderSheetOverlay() {
   `;
 }
 
+// renderDaySheetContent: カレンダーの日をタップして開く日詳細シート。
+// v42: シートの一番上に「その日のお知らせ」(最終日・初日)を出す。文言は「この日が最終日」のように
+// **開いている日そのもの**を基準にする(本体index.htmlと同一仕様)。0件なら何も出さない。表示専用
 function renderDaySheetContent(dateStr) {
   const dayEvents = eventsOnDay(appState.payload.events, dateStr)
     .slice()
@@ -939,12 +976,17 @@ function renderDaySheetContent(dateStr) {
   const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
   const hasNormal = normalEvents.length > 0;
   const hasLongTerm = longTermEvents.length > 0;
+  const notices = computeDayNotices(appState.payload.events, dateStr);
+  const noticeHtml = notices.length
+    ? `<div class="day-notice-list">${notices.map((n) => `<div class="day-notice">${escapeHtml(n.text)}</div>`).join('')}</div>`
+    : '';
   return `
     <div class="sheet-header">
       <h2>${escapeHtml(formatDateLabel(dateStr))}</h2>
       <button type="button" class="icon-btn" data-action="close-sheet" aria-label="閉じる">✕</button>
     </div>
     <div class="sheet-body">
+      ${noticeHtml}
       ${hasNormal ? normalEvents.map((ev) => renderDayEventItem(ev)).join('') : ''}
       ${!hasNormal && !hasLongTerm ? '<p class="empty-hint">公開されている予定はありません</p>' : ''}
       ${hasLongTerm ? renderDayLongTermToggle(longTermEvents) : ''}
