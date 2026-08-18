@@ -22,6 +22,8 @@
 # ※Actionsタブから手動実行(Run workflow)すると、時刻に関係なく朝の通知を1回送ります
 # ※起動が数分遅れることがあります。遅れて起動した場合、その間に送るはずだった分は起動直後にまとめて送ります
 # ※起動の合間(例: 13時)に新しく追加した予定の⏰30分前リマインドは、次の起動(18時)以降の分から有効になります
+# ※公開リポジトリは「60日間コミットが無い」と定期実行が自動で止まります(コミット以外の操作では
+#   リセットされません)。最後のステップが45日ごとに自動でコミットして稼働を維持します
 # =============================================================
 name: Luadule Discord Notify
 
@@ -112,6 +114,7 @@ jobs:
           const CAT_LABELS = {
             event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信',
             call: 'FB通話', other: 'その他', anniversary: '記念日', personal: '自分の予定',
+            deadline: '申請締切日',
           };
           const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -529,21 +532,28 @@ jobs:
           NOTIFY_EOF
           node /tmp/notify.mjs
 
-      # 公開リポジトリは60日間更新がないと定期実行が自動停止されるため、
-      # 50日以上コミットが無ければ小さな更新を自動で入れて稼働を維持する
+      # 公開リポジトリは「60日間コミットが無い」と定期実行が自動停止される。
+      # (リリース作成・issue・PRのマージなどは対象外で、**コミットだけ**がこの期間をリセットする)
+      # そのため45日以上コミットが無ければ、`.keepalive` ファイルに現在時刻を書き込んで
+      # コミット&プッシュし、稼働を維持する。中身が毎回変わるので確実に「変更のあるコミット」になる。
+      #
+      # if: always() … 通知の送信でエラーが起きても必ずこのステップを実行する。
+      # これが無いと、通知が失敗し続けている間はkeepaliveも動かず、
+      # 気づかないうちに60日を過ぎて定期実行ごと止まってしまう
       - name: Keep repository active
+        if: always()
         run: |
           last=$(git log -1 --format=%ct)
           now=$(date +%s)
           days=$(( (now - last) / 86400 ))
-          if [ "$days" -ge 50 ]; then
+          if [ "$days" -ge 45 ]; then
             git config user.name "luadule-bot"
             git config user.email "actions@users.noreply.github.com"
             date > .keepalive
             git add .keepalive
             git commit -m "chore: keep scheduled workflow active"
             git push
-            echo "keepaliveコミットを実行しました"
+            echo "keepaliveコミットを実行しました(最終コミットから${days}日)"
           else
             echo "最終コミットから${days}日のためkeepalive不要"
           fi
