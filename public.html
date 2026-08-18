@@ -212,10 +212,11 @@ const PUBLIC_GIST_FILENAME = 'oshical-public.json';
 // members(限定配信)はv31で公開可カテゴリに追加。ただしユーザーが個別に「公開カレンダーに載せる」
 // チェックを入れた予定だけがoshical-public.jsonのeventsに乗る(本体index.htmlのbuildPublicPayload参照)。
 // callは絶対にここへ追加しないこと
-const ALLOWED_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'other', 'anniversary'];
-const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信', other: 'その他', anniversary: '記念日' };
-const CATEGORY_PERIOD = { event: true, goods: true, ticket: true, stream: false, members: false, other: true, anniversary: false };
-const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', ticket: '#9ccc65', stream: '#a5d8e6', members: '#7cc3d8', other: '#b8b8b8', anniversary: '#e8b04f' };
+// v43: 申請締切日(deadline)を追加。本体index.htmlのPUBLIC_CATEGORIESと同じ並びに保つこと
+const ALLOWED_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'other', 'anniversary', 'deadline'];
+const CATEGORY_LABELS = { event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信', other: 'その他', anniversary: '記念日', deadline: '申請締切日' };
+const CATEGORY_PERIOD = { event: true, goods: true, ticket: true, stream: false, members: false, other: true, anniversary: false, deadline: true };
+const DEFAULT_COLORS = { event: '#e893ac', goods: '#f8b6c8', ticket: '#9ccc65', stream: '#a5d8e6', members: '#7cc3d8', other: '#b8b8b8', anniversary: '#e8b04f', deadline: '#e8724f' };
 // MILESTONE_PRIORITY: リマインドの並び順(index.htmlのcomputeRemindersと同じ優先度定義。
 // 公開ページにはシフトが無いため shift-tomorrow は含まない)
 const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3 };
