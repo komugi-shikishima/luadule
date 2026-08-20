@@ -432,6 +432,30 @@ const PUBLIC_CATEGORIES = ['event', 'goods', 'ticket', 'stream', 'members', 'oth
 // カテゴリ。限定配信(members・v31)と申請締切日(deadline・v43)の2つ。どちらもユーザー確定事項で、
 // 勝手に外さない。ここに無い公開可カテゴリは、チェックの有無にかかわらず共有画像に載る
 const SHARE_NEEDS_PUBLIC = ['members', 'deadline'];
+
+// DONE_LABELS / doneLabelsFor: 「📌 販売期間中 一覧」のチェック欄とハンコの文言(v44)。
+// 一律「購入済み」だと、申請締切日やイベントには意味が合わないため、カテゴリごとに言い換える。
+// **データ側のフラグ名は従来どおり ev.purchased のまま**で、変えているのは見た目の文言だけ。
+// 保存形式・同期・公開ペイロードには一切影響しない(旧データもそのまま読める)。
+// check(チェック欄) は「〜済み」、stamp(ハンコ) は「み」を落とした短い形にして、
+// 既存の「購入済み / 購入済」と見た目を揃える。ここに無いカテゴリは従来の「購入済み」に倒す
+// (一覧に並ばないカテゴリ・未知のカテゴリでも文言が空にならないようにするため)。
+// 文言はユーザー確定事項なので勝手に変えない
+const DONE_LABELS = {
+  goods: { check: '購入済み', stamp: '購入済' },
+  ticket: { check: '購入済み', stamp: '購入済' },
+  deadline: { check: '入力済み', stamp: '入力済' },
+  event: { check: '参加済み', stamp: '参加済' },
+  other: { check: '済み', stamp: '済' },
+  personal: { check: '済み', stamp: '済' },
+};
+const DONE_LABELS_FALLBACK = { check: '購入済み', stamp: '購入済' };
+
+function doneLabelsFor(category) {
+  const found = category ? DONE_LABELS[category] : null;
+  const labels = found || DONE_LABELS_FALLBACK;
+  return { check: labels.check, stamp: labels.stamp }; // 毎回コピーを返す(呼び出し側の書き換えを定義に波及させない)
+}
 // 共有画像1枚に載せる予定の最大件数(v34)。これを超えると「ほか◯件」にまとめる。
 // 画像が縦に長くなりすぎると、端末によってはCanvasのPNG化(toBlob)が失敗するため
 const SHARE_MAX_ITEMS = 24;
@@ -2040,17 +2064,18 @@ function renderLongTermItem(ev, options) {
   const cat = CATEGORIES[ev.category] || CATEGORIES.other;
   const purchased = showPurchased && ev.purchased === true;
   const finished = showFinished && isEventFinished(ev, todayStr());
+  const doneLabels = doneLabelsFor(ev.category);
   const purchaseHtml = showPurchased
     ? `
       <span class="longterm-purchase">
         <label class="longterm-purchase-label">
           <input type="checkbox" data-purchase-toggle="${escapeHtml(ev.id)}" ${ev.purchased === true ? 'checked' : ''}>
-          購入済み
+          ${escapeHtml(doneLabels.check)}
         </label>
       </span>
     `
     : '';
-  const stampHtml = (purchased ? `<span class="purchased-stamp">購入済</span>` : '')
+  const stampHtml = (purchased ? `<span class="purchased-stamp">${escapeHtml(doneLabels.stamp)}</span>` : '')
     + (finished ? `<span class="finished-stamp">イベント終了</span>` : '');
   return `
     <div class="longterm-item${purchased ? ' is-purchased' : ''}${finished ? ' is-finished' : ''}">
@@ -2738,7 +2763,9 @@ function handlePurchasedToggle(id, checked) {
   setState((prev) => ({
     events: prev.events.map((e2) => (e2.id === id ? { ...e2, purchased: checked, updatedAt: Date.now() } : e2)),
   }));
-  showToast(checked ? '購入済みにしました' : '購入済みを解除しました');
+  // トーストの文言も一覧のチェック欄に合わせる(v44。イベントなら「参加済みにしました」)
+  const doneLabels = doneLabelsFor(ev.category);
+  showToast(checked ? `${doneLabels.check}にしました` : `${doneLabels.check}を解除しました`);
 }
 
 function handleSetShift(code) {
@@ -3705,6 +3732,7 @@ if (typeof window !== 'undefined') {
     isEventFinished,
     isBlockedDay,
     isSharableEvent,
+    doneLabelsFor,
     buildShareLines,
     listOnSaleShareEvents,
     listOnSaleShareCategories,
