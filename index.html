@@ -164,6 +164,23 @@ button.today-reminder:active{ filter:brightness(0.96); }
 .shift-badge.shift-hw1{ background:var(--shift-hw1); }
 .shift-badge.shift-hw2{ background:var(--shift-hw2); }
 .shift-badge.shift-hw3{ background:var(--shift-hw3); }
+/* v45: スマホなど幅の狭い画面では、日付の数字とバッジを横に並べるとマスに入りきらず右端が欠けるため、
+   バッジを数字の下の段に置く(全部のマスで同じ位置にそろえる)。広い画面は従来どおり右上 */
+@media (max-width:540px){
+  .day-cell{ padding:3px; }
+  .day-cell-top{ flex-direction:column; align-items:stretch; gap:1px; }
+  .day-num{ line-height:1.2; }
+  .day-badges{ flex-direction:row; flex-wrap:wrap; align-items:center; gap:2px; }
+  .shift-badge{ padding:1px 3px; border-radius:6px; line-height:1.3; }
+  .blocked-badge{ padding:0 2px; font-size:0.55rem; border-radius:6px; line-height:1.3; }
+}
+/* とても狭い画面(320px級)は、カレンダーの外側の余白も少し詰めてマスの幅を確保する */
+@media (max-width:359px){
+  .calendar{ margin:12px 8px; padding:8px; }
+  .month-grid{ gap:3px; }
+  .shift-badge{ padding:1px 2px; }
+  .blocked-badge{ padding:0 1px; font-size:0.5rem; }
+}
 .chip-list{ margin-top:2px; display:flex; flex-direction:column; gap:2px; overflow:hidden; }
 .chip{
   font-size:0.62rem; color:#fff; padding:1px 4px; border-radius:5px; white-space:nowrap;
