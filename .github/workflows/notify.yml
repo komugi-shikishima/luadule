@@ -1,5 +1,5 @@
 # =============================================================
-# ルアジュール Discord通知ワークフロー (v4)
+# ルアジュール Discord通知ワークフロー (v5)
 # リポジトリに「.github/workflows/notify.yml」という名前で保存します。
 #
 # 起動: 毎日 0時 / 6時 / 12時 / 18時(日本時間)の1日4回だけ。
@@ -12,6 +12,7 @@
 #    朝・昼 … 今日の予定(長期予定は除く)+ 最終日のお知らせ
 #              ※1日と月末の朝だけ「いま販売中のもの」一覧が付きます
 #    夜   … 明日が最終日のお知らせ・明日のシフト・明日の予定(対象が無ければ送りません)
+#    ※シフトはアプリで手入力した日はそれを、無い日は「シフトの自動入力(16日サイクル)」の設定から出します(v5)
 #  - 開始時刻がある予定の「30分前」リマインド(⏰)
 #
 # 必要なSecrets(リポジトリのSettings → Secrets and variables → Actions):
@@ -111,6 +112,8 @@ jobs:
             hw2: { label: '休出②', time: '15:00–22:15' },
             hw3: { label: '休出③', time: '22:15–翌7:00' },
           };
+          // シフトの自動入力(v45・16日サイクル)。index.html の SHIFT_CYCLE と同一に保つこと
+          const SHIFT_CYCLE = ['3', '3', '3', '3', 'off', 'off', '2', '2', '2', '2', 'off', '1', '1', '1', '1', 'off'];
           const CAT_LABELS = {
             event: 'イベント', goods: 'グッズ販売', ticket: 'チケット販売', stream: '配信', members: '限定配信',
             call: 'FB通話', other: 'その他', anniversary: '記念日', personal: '自分の予定',
@@ -238,9 +241,52 @@ jobs:
           // 長期予定(アプリで「長期予定として表示する」にチェックしたもの)。
           // 販売期間などが毎日ずっと通知に並ぶのを防ぐため、日々の予定行からは除外する
           function isLongTerm(e) { return !!e && e.longTerm === true; }
-          function shiftLine(shifts, dateStr, prefix) {
-            const s = (shifts || {})[dateStr];
-            if (!s || s.deleted || !SHIFT_DEFS[s.code]) return null;
+          // --- シフトの自動入力(v45)。index.html の isValidDateStr / normalizeShiftCycle / autoShiftCodeOn /
+          // effectiveShiftOn と同一仕様に保つこと(手入力のシフトが最優先、無ければ16日サイクル、長期休暇は休み) ---
+          function isValidDateStr(s) {
+            if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+            const [y, m, d] = s.split('-').map(Number);
+            if (y < 1900 || y > 2999 || m < 1 || m > 12 || d < 1) return false;
+            return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+          }
+          function daysBetween(a, b) {
+            const [ay, am, ad] = a.split('-').map(Number);
+            const [by, bm, bd] = b.split('-').map(Number);
+            return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+          }
+          function normalizeShiftCycle(raw) {
+            const src = raw && typeof raw === 'object' ? raw : {};
+            const startDate = isValidDateStr(src.startDate) ? src.startDate : '';
+            const posNum = Number(src.startPos);
+            const startPos = Number.isInteger(posNum) && posNum >= 1 && posNum <= SHIFT_CYCLE.length ? posNum : 1;
+            return {
+              enabled: src.enabled === true && startDate !== '',
+              startDate,
+              startPos,
+              vacationStart: isValidDateStr(src.vacationStart) ? src.vacationStart : '',
+              vacationEnd: isValidDateStr(src.vacationEnd) ? src.vacationEnd : '',
+            };
+          }
+          function autoShiftCodeOn(cycle, dateStr) {
+            const c = normalizeShiftCycle(cycle);
+            if (!c.enabled || !isValidDateStr(dateStr)) return null;
+            const diff = daysBetween(c.startDate, dateStr);
+            if (diff < 0) return null;
+            const len = SHIFT_CYCLE.length;
+            const code = SHIFT_CYCLE[((c.startPos - 1 + diff) % len + len) % len];
+            const inVacation = c.vacationStart && c.vacationEnd && c.vacationStart <= c.vacationEnd
+              && inRange(dateStr, c.vacationStart, c.vacationEnd);
+            return inVacation ? 'off' : code;
+          }
+          function effectiveShiftOn(data, dateStr) {
+            const raw = ((data && data.shifts) || {})[dateStr];
+            if (raw && !raw.deleted) return raw;
+            const code = autoShiftCodeOn(data && data.settings ? data.settings.shiftCycle : null, dateStr);
+            return code ? { code, auto: true } : null;
+          }
+          function shiftLine(data, dateStr, prefix) {
+            const s = effectiveShiftOn(data, dateStr);
+            if (!s || !SHIFT_DEFS[s.code]) return null;
             const def = SHIFT_DEFS[s.code];
             return `💼 ${prefix}のシフト: ${def.label}${def.time ? `(${def.time})` : ''}`;
           }
@@ -288,7 +334,7 @@ jobs:
           // buildDaily: 朝・昼のダイジェスト。withOnSale=true(朝のみ)かつ月初/月末なら販売中一覧を添える
           function buildDaily(data, today, withOnSale) {
             const lines = [];
-            const shift = shiftLine(data.shifts, today, '今日');
+            const shift = shiftLine(data, today, '今日');
             if (shift) lines.push(shift);
             const evs = eventLines(data.events, today);
             if (evs.length) { lines.push('📅 今日の予定'); lines.push(...evs); }
@@ -300,7 +346,8 @@ jobs:
             }
             // 何も無い日でも、販売期間中のものがあるならその件数だけは伝える
             // (「予定はありません」だけだと販売が終わったと誤解するため)
-            if (!lines.length) {
+            // v45: シフトの行は「予定」に数えない(自動入力でシフトは毎日入るので、数えるとこの案内が出なくなる)
+            if (lines.length === (shift ? 1 : 0)) {
               lines.push(onSale.length ? `今日の予定はありません🌸(販売期間中のもの ${onSale.length}件)` : '今日の予定はありません🌸');
             }
             return lines;
@@ -313,7 +360,7 @@ jobs:
                 lines.push(`⚠ 『${e.title}』は明日が最終日! 買い逃し・見逃し注意!`);
               }
             });
-            const shift = shiftLine(data.shifts, tomorrow, '明日');
+            const shift = shiftLine(data, tomorrow, '明日');
             if (shift) lines.push(shift);
             const evs = eventLines(data.events, tomorrow);
             if (evs.length) { lines.push('📅 明日の予定'); lines.push(...evs); }
