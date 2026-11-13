@@ -239,8 +239,25 @@ button.today-reminder:active{ filter:brightness(0.96); }
   background:#fff;
 }
 .shift-btn.active{ border-color:var(--primary-dark); background:var(--primary-light); font-weight:700; }
+.shift-btn.is-auto{ border-style:dashed; border-color:var(--primary-dark); font-weight:700; } /* v45: 自動で入っているシフト */
 /* FB通話の申請不可日トグル(v39)。自分専用の印なので、テーマ色ではなく落ち着いたグレー系にする */
 .blocked-picker{ margin-top:12px; }
+/* シフトの自動入力(v45) */
+.shift-auto-note{ margin:-2px 0 8px; font-size:0.8rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.shift-cycle-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:8px; }
+.shift-cycle-grid.is-base{ grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); } /* スマホでは縦に並べ、選択肢の文字が切れないように */
+.shift-cycle-grid .field{ min-width:0; }
+.shift-cycle-grid input, .shift-cycle-grid select{
+  width:100%; min-width:0; min-height:44px; padding:8px 10px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); background:#fff; font-size:0.95rem; color:var(--text);
+}
+.shift-cycle-status{ margin:4px 0 8px; font-size:0.88rem; overflow-wrap:anywhere; }
+.shift-cycle-preview{ display:grid; grid-template-columns:repeat(8, minmax(0, 1fr)); gap:4px; margin-bottom:8px; }
+.shift-cycle-day{ display:flex; flex-direction:column; align-items:center; gap:2px; min-width:0; }
+.shift-cycle-date{ font-size:0.68rem; color:var(--text-muted); white-space:nowrap; }
+.shift-cycle-day .shift-badge{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shift-cycle-actions{ display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 8px; }
+.shift-cycle-actions button{ flex:1 1 180px; }
 .blocked-btn{
   width:100%; min-height:44px; padding:0 12px; border:2px solid var(--border); border-radius:var(--radius-md);
   background:#fff; color:var(--text-muted);
@@ -418,6 +435,18 @@ const SHIFT_COLOR_DEFAULTS = {
   off: '#8fbf9f', paid: '#bcd9c5',
   hw: '#f0a860', hw1: '#f0a860', hw2: '#f0a860', hw3: '#f0a860',
 };
+// SHIFT_CYCLE: 16日で1周するシフトの並び(v45)。指揮官の設定用エクセル「3333休休2222休1111休」と同じ。
+// 設定画面で「基準の日」と「その日がこの並びの何番目か」を1回選べば、基準の日から先は自動でシフトが入る。
+// **notify.yml にも同じ並びを持っている。変えるときは両方を同時に直すこと**
+const SHIFT_CYCLE = ['3', '3', '3', '3', 'off', 'off', '2', '2', '2', '2', 'off', '1', '1', '1', '1', 'off'];
+const SHIFT_CYCLE_POS_LABELS = [
+  '③の1日目', '③の2日目', '③の3日目', '③の4日目',
+  '③明けの休み(1日目)', '③明けの休み(2日目)',
+  '②の1日目', '②の2日目', '②の3日目', '②の4日目',
+  '②明けの休み',
+  '①の1日目', '①の2日目', '①の3日目', '①の4日目',
+  '①明けの休み',
+];
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 const MILESTONE_PRIORITY = { 'lastday-eve': 0, lastday: 1, firstday: 2, anniversary: 2.5, 'today-time': 3, 'shift-tomorrow': 4 };
 const GIST_DESCRIPTION = 'oshical-sync-v1';
@@ -619,6 +648,10 @@ function getDefaultState() {
       memoColor: '',      // 自分用メモの文字色。空文字=テーマから自動導出
       todayColor: '',     // 今日の枠の色。空文字=テーマから自動導出
       membersPublicMigrated: false, // v31: 限定配信(members)公開解禁の安全マイグレーション実施済みフラグ
+      // shiftCycle: シフトの自動入力(v45)。startDate から先は16日サイクルでシフトを自動で出す。
+      // startPos は startDate が SHIFT_CYCLE の何番目か(1〜16)。長期休暇は開始・終了の両方があるときだけ有効。
+      // **自分専用**。公開ペイロード・共有画像には出さない(Discord通知の「今日/明日のシフト」には出す)
+      shiftCycle: { enabled: false, startDate: '', startPos: 1, vacationStart: '', vacationEnd: '' },
       updatedAt: 0,
     },
     events: [],
@@ -780,9 +813,132 @@ function todayAgenda(targetState, today) {
       if (!a.time && b.time) return 1;
       return String(a.title).localeCompare(String(b.title));
     });
-  const shiftRaw = (targetState.shifts || {})[today];
-  const shift = (shiftRaw && !shiftRaw.deleted) ? shiftRaw : null;
+  // v45: 手で入れたシフトが無い日は、自動入力(16日サイクル)のシフトを返す
+  const shift = effectiveShiftOn(targetState, today);
   return { dateStr: today, events, shift };
+}
+
+/* --- シフトの自動入力(v45・16日サイクル) --- */
+
+// isValidDateStr: "YYYY-MM-DD" 形式で、実在する日付かどうか(2026-02-30 などは false)
+function isValidDateStr(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const { y, m, d } = parseDateStr(s);
+  // 年は1900〜2999だけ受け付ける(PCの日付欄で年を「26」とだけ打つと 0026年 になり、計算が黙ってずれるため)
+  if (y < 1900 || y > 2999 || m < 1 || m > 12 || d < 1) return false;
+  return d <= daysInMonth(y, m);
+}
+
+// daysBetween: a から b まで何日あるか(b が前ならマイナス)。時差・夏時間の影響を受けないよう UTC で数える
+function daysBetween(a, b) {
+  const pa = parseDateStr(a);
+  const pb = parseDateStr(b);
+  return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / 86400000);
+}
+
+// normalizeShiftCycle: 保存されている自動入力の設定を、壊れていても安全に読める形にそろえる純関数。
+// 開始日が正しくなければ「自動入力しない」扱い。位置が1〜16の整数でなければ1に戻す
+function normalizeShiftCycle(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const startDate = isValidDateStr(src.startDate) ? src.startDate : '';
+  const posNum = Number(src.startPos);
+  const startPos = Number.isInteger(posNum) && posNum >= 1 && posNum <= SHIFT_CYCLE.length ? posNum : 1;
+  return {
+    enabled: src.enabled === true && startDate !== '',
+    startDate,
+    startPos,
+    vacationStart: isValidDateStr(src.vacationStart) ? src.vacationStart : '',
+    vacationEnd: isValidDateStr(src.vacationEnd) ? src.vacationEnd : '',
+  };
+}
+
+// shiftCyclePosOn: その日が16日サイクルの何番目か(1〜16)。自動入力の対象外の日は null。
+// 基準の日より前は対象外(過去に手で入れてきたシフトとぶつからないようにするため)
+function shiftCyclePosOn(cycle, dateStr) {
+  const c = normalizeShiftCycle(cycle);
+  if (!c.enabled || !isValidDateStr(dateStr)) return null;
+  const diff = daysBetween(c.startDate, dateStr);
+  if (diff < 0) return null;
+  const len = SHIFT_CYCLE.length;
+  return ((c.startPos - 1 + diff) % len + len) % len + 1;
+}
+
+// cycleShiftCodeOn: 16日サイクルだけで決まるシフトのコード('1'|'2'|'3'|'off')。対象外は null
+function cycleShiftCodeOn(cycle, dateStr) {
+  const pos = shiftCyclePosOn(cycle, dateStr);
+  return pos === null ? null : SHIFT_CYCLE[pos - 1];
+}
+
+// isInShiftVacation: 長期休暇の期間中か。開始・終了の両方があり、開始<=終了のときだけ有効
+function isInShiftVacation(cycle, dateStr) {
+  const c = normalizeShiftCycle(cycle);
+  if (!c.vacationStart || !c.vacationEnd || compareDates(c.vacationStart, c.vacationEnd) > 0) return false;
+  return isDateInRange(dateStr, c.vacationStart, c.vacationEnd);
+}
+
+// autoShiftCodeOn: 自動入力で出すシフト。長期休暇中は「休み」。休暇中もサイクルは裏で進むので、休暇明けもずれない
+function autoShiftCodeOn(cycle, dateStr) {
+  const code = cycleShiftCodeOn(cycle, dateStr);
+  if (code === null) return null;
+  return isInShiftVacation(cycle, dateStr) ? 'off' : code;
+}
+
+// shiftCycleLabelOn: 「③の2日目」「長期休暇」など、その日がサイクルのどこかを表す文言。対象外は空文字
+function shiftCycleLabelOn(cycle, dateStr) {
+  const pos = shiftCyclePosOn(cycle, dateStr);
+  if (pos === null) return '';
+  return isInShiftVacation(cycle, dateStr) ? '長期休暇' : SHIFT_CYCLE_POS_LABELS[pos - 1];
+}
+
+// effectiveShiftOn: その日に表示するシフト。手で入れたシフト(削除済みでないもの)が最優先で、
+// そのオブジェクトをそのまま返す。無ければ自動入力のシフトを { code, auto:true } で返す。どちらも無ければ null。
+// 「なし」を押した跡(deleted:true)は手入力なしとみなすので、自動入力の日は自動のシフトに戻る
+function effectiveShiftOn(targetState, dateStr) {
+  if (!targetState) return null;
+  const raw = (targetState.shifts || {})[dateStr];
+  if (raw && !raw.deleted) return raw;
+  const cycle = targetState.settings ? targetState.settings.shiftCycle : null;
+  const code = autoShiftCodeOn(cycle, dateStr);
+  return code ? { code, auto: true } : null;
+}
+
+// buildShiftCyclePreview: 設定画面に出す「この先の並び」。fromDate(基準の日より前なら基準の日)から days 日分
+function buildShiftCyclePreview(cycle, fromDate, days) {
+  const c = normalizeShiftCycle(cycle);
+  const count = Number.isInteger(days) && days > 0 ? Math.min(days, 62) : 0;
+  if (!c.enabled || !count || !isValidDateStr(fromDate)) return [];
+  const start = compareDates(fromDate, c.startDate) < 0 ? c.startDate : fromDate;
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    const dateStr = addDays(start, i);
+    list.push({ dateStr, code: autoShiftCodeOn(c, dateStr) });
+  }
+  return list;
+}
+
+// validateShiftCycleInput: 設定画面の入力を確かめる純関数。OKなら保存する値(value)も返す
+function validateShiftCycleInput(input) {
+  const src = input && typeof input === 'object' ? input : {};
+  const errors = {};
+  const startDate = typeof src.startDate === 'string' ? src.startDate : '';
+  const posNum = Number(src.startPos);
+  const vacationStart = typeof src.vacationStart === 'string' ? src.vacationStart : '';
+  const vacationEnd = typeof src.vacationEnd === 'string' ? src.vacationEnd : '';
+  if (!isValidDateStr(startDate)) errors.startDate = '基準の日を選んでください';
+  if (!Number.isInteger(posNum) || posNum < 1 || posNum > SHIFT_CYCLE.length) errors.startPos = 'その日のシフトを選んでください';
+  if (vacationStart || vacationEnd) {
+    if (!isValidDateStr(vacationStart) || !isValidDateStr(vacationEnd)) {
+      errors.vacation = '長期休暇は開始日と終了日の両方を入れてください(使わないときは両方空欄)';
+    } else if (compareDates(vacationStart, vacationEnd) > 0) {
+      errors.vacation = '長期休暇の終了日が開始日より前になっています';
+    }
+  }
+  const valid = Object.keys(errors).length === 0;
+  return {
+    valid,
+    errors,
+    value: valid ? { enabled: true, startDate, startPos: posNum, vacationStart, vacationEnd } : null,
+  };
 }
 
 // isBlockedDay: その日がFB通話の申請不可日かどうかを判定する純関数(v39)。
@@ -1092,7 +1248,8 @@ function computeReminders(targetState, today) {
     }
   });
 
-  const tomorrowShift = shifts[tomorrow];
+  // v45: 手入力が無い日は自動入力(16日サイクル)のシフトでお知らせする
+  const tomorrowShift = effectiveShiftOn(targetState ? { ...targetState, shifts } : null, tomorrow);
   if (tomorrowShift && !tomorrowShift.deleted && SHIFT_DEFS[tomorrowShift.code]) {
     reminders.push({
       id: `shift:shift-tomorrow:${today}`,
@@ -1192,6 +1349,17 @@ function mergeShiftMaps(localShifts, remoteShifts) {
   return result;
 }
 
+// pickNewerShiftCycle: 2台の設定のうち、shiftCycle.updatedAt が新しい方の shiftCycle を返す。
+// どちらにも updatedAt が無ければ null(=従来どおり settings 丸ごとの勝敗に任せる)
+function pickNewerShiftCycle(localSettings, remoteSettings) {
+  const lc = localSettings && localSettings.shiftCycle;
+  const rc = remoteSettings && remoteSettings.shiftCycle;
+  const lt = (lc && Number(lc.updatedAt)) || 0;
+  const rt = (rc && Number(rc.updatedAt)) || 0;
+  if (!lt && !rt) return null;
+  return rt > lt ? rc : lc;
+}
+
 // mergeData: ローカルとリモートを updatedAt ベースで統合する純関数
 function mergeData(local, remote) {
   if (!remote) return local || getDefaultState();
@@ -1206,6 +1374,12 @@ function mergeData(local, remote) {
     settings = (remote.settings.updatedAt || 0) > (local.settings.updatedAt || 0) ? remote.settings : local.settings;
   } else {
     settings = remote.settings || local.settings || getDefaultState().settings;
+  }
+  // v45: シフトの自動入力は、他の設定(色など)を別の端末で触っただけで消えないよう、
+  // 自分の updatedAt で新しい方を選ぶ(どちらにも updatedAt が無い旧データは settings の勝敗に従う)
+  const pickedCycle = pickNewerShiftCycle(local.settings, remote.settings);
+  if (pickedCycle && settings && settings.shiftCycle !== pickedCycle) {
+    settings = { ...settings, shiftCycle: pickedCycle };
   }
 
   return { version: 1, settings, events, shifts, blockedDays };
@@ -1893,7 +2067,19 @@ function createDraftEvent(dateStr) {
 function render() {
   applyTheme(state.settings);
   const root = document.getElementById('app');
+  // v45: 同じシートを開いたまま描き直すとき(設定の保存・トーストの出し入れなど)は、
+  // シートのスクロール位置を保つ。描き直しのたびに一番上へ戻ってしまうのを防ぐため
+  const canQuery = typeof document.querySelector === 'function';
+  const oldSheet = canQuery ? document.querySelector('.sheet') : null;
+  const oldKindRaw = oldSheet && oldSheet.dataset ? oldSheet.dataset.sheet : null;
+  // 予定フォームは入力エラーをシートの上に出すので、描き直したら上に戻す(従来どおり)
+  const oldKind = oldKindRaw === 'settings' || oldKindRaw === 'day' ? oldKindRaw : null;
+  const oldTop = oldSheet ? oldSheet.scrollTop : 0;
   root.innerHTML = renderApp();
+  if (oldKind && oldTop) {
+    const newSheet = document.querySelector('.sheet');
+    if (newSheet && newSheet.dataset && newSheet.dataset.sheet === oldKind) newSheet.scrollTop = oldTop;
+  }
 }
 
 function fullRender() {
@@ -2119,7 +2305,7 @@ function renderDayCell(cell, today) {
   // 長期予定はチップにせず、マス下部の細いラインだけで示す(視認性のため。詳細は日タップか上部一覧から)
   const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
   const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
-  const shift = state.shifts[cell.dateStr];
+  const shift = effectiveShiftOn(state, cell.dateStr);
   const classes = ['day-cell'];
   if (!cell.inMonth) classes.push('outside');
   // 過ぎた日はひと目で分かるように薄く・彩度を落とす(v39。表示だけの変更でデータには触れない)
@@ -2188,7 +2374,9 @@ function renderDaySheet() {
     .sort((a, b) => compareDates(a.startDate, b.startDate) || a.title.localeCompare(b.title));
   const normalEvents = dayEvents.filter((ev) => ev.longTerm !== true);
   const longTermEvents = dayEvents.filter((ev) => ev.longTerm === true);
-  const shift = state.shifts[dateStr];
+  const shift = effectiveShiftOn(state, dateStr);
+  const autoCode = autoShiftCodeOn(state.settings.shiftCycle, dateStr);
+  const autoLabel = shiftCycleLabelOn(state.settings.shiftCycle, dateStr);
   const blocked = isBlockedDay(state, dateStr);
   const hasNormal = normalEvents.length > 0;
   const hasLongTerm = longTermEvents.length > 0;
@@ -2205,7 +2393,8 @@ function renderDaySheet() {
       ${noticeHtml}
       <section class="shift-picker">
         <h3>シフト</h3>
-        <div class="shift-buttons">${renderShiftButtons(shift)}</div>
+        ${autoCode ? `<p class="shift-auto-note">${renderShiftAutoNote(shift, autoCode, autoLabel)}</p>` : ''}
+        <div class="shift-buttons">${renderShiftButtons(shift, autoCode)}</div>
       </section>
       <section class="blocked-picker">
         <h3>FB通話</h3>
@@ -2304,14 +2493,32 @@ function defaultShareOnSaleSelection(options) {
   return (options || []).filter((opt) => opt.key !== 'all').map((opt) => opt.key);
 }
 
-function renderShiftButtons(shift) {
-  const current = shift && !shift.deleted ? shift.code : null;
+// renderShiftAutoNote: 日詳細のシフト欄の下に出す一言(自動入力の日だけ)
+function renderShiftAutoNote(shift, autoCode, autoLabel) {
+  const label = escapeHtml(autoLabel);
+  if (shift && shift.auto) return `🔁 自動で入っています(${label})`;
+  if (shift && shift.code === autoCode) return `🔁 自動と同じシフトです(${label})`;
+  return `✋ 手で変更しています(自動なら「${escapeHtml(SHIFT_DEFS[autoCode].label)}」・${label})`;
+}
+
+// renderShiftButtons: 日詳細のシフト選択ボタン。autoCode があれば(自動入力の日)、
+// 「なし」の代わりに「自動に戻す」を出す(手で入れたシフトを消すと自動のシフトに戻るため)
+function renderShiftButtons(shift, autoCode) {
+  const isAuto = !!(shift && shift.auto);
+  // 自動の日は「選ばれている(active)」にせず、点線の枠(is-auto)で「自動ならこれ」を示す。
+  // 選ばれているのは「自動に戻す」の方。手で選んだ日だけ、そのシフトを active にする
+  const current = shift && !shift.deleted && !isAuto ? shift.code : null;
   const buttons = SHIFT_CODE_ORDER.map((code) => {
     const def = SHIFT_DEFS[code];
     const active = current === code ? ' active' : '';
-    return `<button type="button" class="shift-btn${active}" data-action="set-shift" data-code="${code}">${escapeHtml(def.label)}</button>`;
+    const auto = isAuto && autoCode === code ? ' is-auto' : '';
+    return `<button type="button" class="shift-btn${active}${auto}" data-action="set-shift" data-code="${code}">${escapeHtml(def.label)}</button>`;
   });
-  buttons.push(`<button type="button" class="shift-btn${!current ? ' active' : ''}" data-action="set-shift" data-code="none">なし</button>`);
+  if (autoCode) {
+    buttons.push(`<button type="button" class="shift-btn${isAuto ? ' active' : ''}" data-action="set-shift" data-code="none">自動に戻す</button>`);
+  } else {
+    buttons.push(`<button type="button" class="shift-btn${!current ? ' active' : ''}" data-action="set-shift" data-code="none">なし</button>`);
+  }
   return buttons.join('');
 }
 
@@ -2472,6 +2679,7 @@ function renderSettingsSheet() {
         <h3>推しの名前</h3>
         <input type="text" data-setting="oshiName" value="${escapeHtml(settings.oshiName || '')}" placeholder="推し" maxlength="30">
       </section>
+      ${renderShiftCycleSection(settings)}
       <section class="settings-section">
         <h3>テーマカラー</h3>
         <div class="theme-color-row">
@@ -2509,6 +2717,80 @@ function renderSettingsSheet() {
         </div>
       </section>
     </div>
+  `;
+}
+
+// renderShiftCycleSection: 設定画面の「シフトの自動入力」欄(v45)。
+// 入力欄は data-setting を付けない(選ぶたびに保存・再描画すると、選んでいる途中で画面が作り直されるため)。
+// 「この内容で自動入力する」ボタンで、まとめて確かめてから保存する
+// shiftCycleFormValues: 設定画面の入力欄に出す値。入力途中の控え(uiState.shiftCycleDraft)があればそれを優先する。
+// 保存前にトーストなどで描き直しても、入れたばかりの値が消えないようにするため
+function shiftCycleFormValues(saved, draft, today) {
+  const d = draft && typeof draft === 'object' ? draft : {};
+  const pick = (key, fallback) => (typeof d[key] === 'string' ? d[key] : fallback);
+  return {
+    startDate: pick('startDate', saved.startDate || today),
+    startPos: pick('startPos', String(saved.startPos)),
+    vacationStart: pick('vacationStart', saved.vacationStart),
+    vacationEnd: pick('vacationEnd', saved.vacationEnd),
+  };
+}
+
+// renderShiftCycleStatus: 「自動入力中:今日は◯◯」と、今日から16日分の並び
+function renderShiftCycleStatus(c, today) {
+  if (!c.enabled) return '<p class="settings-hint">いまは自動入力していません</p>';
+  const todayLabel = shiftCycleLabelOn(c, today);
+  const cells = buildShiftCyclePreview(c, today, SHIFT_CYCLE.length).map((d) => {
+    const md = parseDateStr(d.dateStr);
+    return `<div class="shift-cycle-day"><span class="shift-cycle-date">${md.m}/${md.d}</span>${renderShiftBadge({ code: d.code })}</div>`;
+  }).join('');
+  return `
+    <p class="shift-cycle-status">🔁 自動入力中:${todayLabel
+      ? `今日は<strong>${escapeHtml(todayLabel)}</strong>`
+      : `${escapeHtml(formatDateLabel(c.startDate))}から自動で入ります`}</p>
+    <div class="shift-cycle-preview" aria-label="この先16日のシフト">${cells}</div>
+  `;
+}
+
+function renderShiftCycleSection(settings) {
+  const c = normalizeShiftCycle(settings.shiftCycle);
+  const today = todayStr();
+  const v = shiftCycleFormValues(c, uiState.shiftCycleDraft, today);
+  const posOptions = SHIFT_CYCLE_POS_LABELS.map((label, i) =>
+    `<option value="${i + 1}"${v.startPos === String(i + 1) ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('');
+  const status = renderShiftCycleStatus(c, today);
+  return `
+    <section class="settings-section" id="shift-cycle-section">
+      <h3>シフトの自動入力(16日サイクル)</h3>
+      <p class="settings-hint">③×4日 → 休み×2日 → ②×4日 → 休み → ①×4日 → 休み の16日で繰り返します。1回設定すれば、基準の日から先のシフトが自動で入ります。</p>
+      ${status}
+      <div class="shift-cycle-grid is-base">
+        <div class="field">
+          <label for="sc-start">基準の日</label>
+          <input type="date" id="sc-start" data-cycle-field="startDate" value="${escapeHtml(v.startDate)}">
+        </div>
+        <div class="field">
+          <label for="sc-pos">その日のシフト</label>
+          <select id="sc-pos" data-cycle-field="startPos">${posOptions}</select>
+        </div>
+      </div>
+      <h4>長期休暇(なければ空欄)</h4>
+      <div class="shift-cycle-grid">
+        <div class="field">
+          <label for="sc-vac-start">開始日</label>
+          <input type="date" id="sc-vac-start" data-cycle-field="vacationStart" value="${escapeHtml(v.vacationStart)}">
+        </div>
+        <div class="field">
+          <label for="sc-vac-end">終了日</label>
+          <input type="date" id="sc-vac-end" data-cycle-field="vacationEnd" value="${escapeHtml(v.vacationEnd)}">
+        </div>
+      </div>
+      <div class="shift-cycle-actions">
+        <button type="button" class="btn-primary" data-action="save-shift-cycle">${c.enabled ? 'この内容に変更する' : 'この内容で自動入力する'}</button>
+        ${c.enabled ? '<button type="button" class="btn-secondary" data-action="stop-shift-cycle">自動入力をやめる</button>' : ''}
+      </div>
+      <p class="settings-hint">有給・休日出勤など手で選んだシフトは、自動より優先されます。日付をタップして「自動に戻す」を押すと元に戻ります。長期休暇の間は「休み」になり、休暇明けもサイクルはずれません。基準の日より前の日には自動で入りません(基準の日を変えると、それより前の自動の分は消えます)。</p>
+    </section>
   `;
 }
 
@@ -2771,18 +3053,65 @@ function handlePurchasedToggle(id, checked) {
 function handleSetShift(code) {
   const dateStr = uiState.selectedDate;
   if (!dateStr) return;
+  const action = nextShiftAction(state, dateStr, code);
+  if (action === 'noop') return; // 変わらない操作では保存も同期もしない
   const now = Date.now();
   setState((prev) => {
     const nextShifts = { ...prev.shifts };
-    if (code === 'none') {
+    if (action === 'none') {
       if (nextShifts[dateStr]) {
         nextShifts[dateStr] = { ...nextShifts[dateStr], deleted: true, updatedAt: now };
       }
     } else {
-      nextShifts[dateStr] = { code, updatedAt: now, deleted: false };
+      nextShifts[dateStr] = { code: action, updatedAt: now, deleted: false };
     }
     return { shifts: nextShifts };
   });
+}
+
+// handleSaveShiftCycle: 設定画面の「この内容で自動入力する」(v45)
+function handleSaveShiftCycle() {
+  const read = (id) => {
+    const el = document.getElementById(id);
+    return el && typeof el.value === 'string' ? el.value : '';
+  };
+  const result = validateShiftCycleInput({
+    startDate: read('sc-start'),
+    startPos: read('sc-pos'),
+    vacationStart: read('sc-vac-start'),
+    vacationEnd: read('sc-vac-end'),
+  });
+  if (!result.valid) {
+    const first = result.errors.startDate || result.errors.startPos || result.errors.vacation;
+    showToast(first);
+    return;
+  }
+  setUiStateSilent({ shiftCycleDraft: null });
+  updateSettings({ shiftCycle: { ...result.value, updatedAt: Date.now() } });
+  showToast('シフトの自動入力を設定しました');
+}
+
+// handleStopShiftCycle: 自動入力をやめる。選んでいた内容は残すので、次に「この内容で…」を押せばすぐ再開できる。
+// 手で入れたシフトには触れない
+function handleStopShiftCycle() {
+  const current = normalizeShiftCycle(state.settings.shiftCycle);
+  setUiStateSilent({ shiftCycleDraft: null });
+  updateSettings({ shiftCycle: { ...current, enabled: false, updatedAt: Date.now() } });
+  showToast('シフトの自動入力をやめました');
+}
+
+// nextShiftAction: 日詳細のシフトボタンを押したときに実際に行う操作を決める純関数(v45)。
+// - 自動の日に「自動と同じシフト」を押した → 手入力で固定せず自動のまま(=手入力を消す 'none')
+//   (固定すると、あとで自動入力の設定を直してもその日だけ古いシフトのまま残ってしまうため)
+// - 消すもの(手入力)が無いのに 'none' → 何もしない 'noop'
+// - それ以外 → 押したコードそのまま
+function nextShiftAction(targetState, dateStr, code) {
+  const raw = ((targetState && targetState.shifts) || {})[dateStr];
+  const hasManual = !!(raw && !raw.deleted);
+  const autoCode = autoShiftCodeOn(targetState && targetState.settings ? targetState.settings.shiftCycle : null, dateStr);
+  const action = autoCode && code === autoCode ? 'none' : code;
+  if (action === 'none' && !hasManual) return 'noop';
+  return action;
 }
 
 // handleToggleBlockedDay: FB通話の申請不可日を入り切りする(v39)。
@@ -3344,7 +3673,7 @@ function handleAction(el) {
   const action = el.dataset.action;
   switch (action) {
     case 'open-settings':
-      setUiState({ sheet: 'settings', syncMessage: '' });
+      setUiState({ sheet: 'settings', syncMessage: '', shiftCycleDraft: null });
       break;
     case 'close-sheet':
       requestCloseSheet();
@@ -3398,6 +3727,12 @@ function handleAction(el) {
       break;
     case 'set-shift':
       handleSetShift(el.dataset.code);
+      break;
+    case 'save-shift-cycle':
+      handleSaveShiftCycle();
+      break;
+    case 'stop-shift-cycle':
+      handleStopShiftCycle();
       break;
     case 'toggle-blocked':
       handleToggleBlockedDay(el.dataset.date);
@@ -3469,7 +3804,18 @@ function onAppClick(e) {
   handleAction(actionEl);
 }
 
+// rememberShiftCycleDraft: 自動入力欄の入力途中の値を控える(再描画しない)
+function rememberShiftCycleDraft(el) {
+  const key = el.dataset.cycleField;
+  if (['startDate', 'startPos', 'vacationStart', 'vacationEnd'].indexOf(key) === -1) return;
+  setUiStateSilent({ shiftCycleDraft: { ...(uiState.shiftCycleDraft || {}), [key]: String(el.value || '') } });
+}
+
 function onAppInput(e) {
+  if (e.target.dataset && e.target.dataset.cycleField) {
+    rememberShiftCycleDraft(e.target);
+    return;
+  }
   const field = e.target.dataset.field;
   if (!field || !uiState.editingEvent) return;
   const draft = fixDraftLongTerm(fixDraftEndDate({ ...uiState.editingEvent, [field]: e.target.value }));
@@ -3494,6 +3840,10 @@ function onAppChange(e) {
   }
   if (e.target.dataset.purchaseToggle) {
     handlePurchasedToggle(e.target.dataset.purchaseToggle, e.target.checked);
+    return;
+  }
+  if (e.target.dataset.cycleField) {
+    rememberShiftCycleDraft(e.target);
     return;
   }
   if (e.target.dataset.shareCategory) {
@@ -3693,6 +4043,22 @@ if (typeof window !== 'undefined') {
     CATEGORIES,
     SHIFT_DEFS,
     SHIFT_CODE_ORDER,
+    SHIFT_CYCLE,
+    SHIFT_CYCLE_POS_LABELS,
+    isValidDateStr,
+    daysBetween,
+    normalizeShiftCycle,
+    shiftCyclePosOn,
+    cycleShiftCodeOn,
+    isInShiftVacation,
+    autoShiftCodeOn,
+    shiftCycleLabelOn,
+    effectiveShiftOn,
+    buildShiftCyclePreview,
+    validateShiftCycleInput,
+    shiftCycleFormValues,
+    pickNewerShiftCycle,
+    nextShiftAction,
     STORAGE_KEYS,
     PUBLIC_CATEGORIES,
     formatEventSchedule,
